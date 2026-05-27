@@ -1,0 +1,71 @@
+
+[package]
+edition = "2024"
+name = "pwm-control-loop"
+version = "0.1.0"
+
+[build-dependencies]
+regex = "1.11.0"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = "1.0.0"
+defmt = "1"
+defmt-rtt = "1"
+embassy-rp = { version = "0.10.0", features = [
+    "rp235xa",
+    "defmt",
+    "binary-info",
+    "critical-section-impl",
+    "time-driver",
+    # "rom-v2-intrinsics",
+] }
+embassy-executor = { version = "0.10.0", features = [
+    "defmt",
+    "executor-thread",
+    "platform-cortex-m",
+] }
+embassy-time = "0.5.1"
+
+panic-probe = { version = "1", features = ["print-defmt"] }
+rp-pac = { version = "7.0.0", features = ["rp235x"] }
+embassy-sync = "0.8.0"
+micromath = "2.1.0"
+libm = "0.2.16"
+static_cell = "2.1.1"
+embassy-net-wiznet = "0.3.0"
+embassy-net = { version = "0.9.1", features = [
+    "defmt",
+    "medium-ethernet",
+    "proto-ipv4",
+    "tcp",
+    "dhcpv4",
+] }
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
+smoltcp = { version = "0.13.1", default-features = false, features = [
+    "defmt",
+    "socket-tcp",
+    "proto-ipv4",
+    "medium-ethernet",
+    # "log",
+    "verbose",
+] }
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.2", features = ["defmt"] }
+heapless = "0.9.3"
+# log-to-defmt = "0.1.0"
+log = "0.4.29"
+# w5500 = { version = "0.6.0", features = ["defmt"] }
+w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
+w5500-hl = { version = "0.12.0" }
+fixed = "1.31.0"
+color = { version = "0.3.3", default-features = false, features = ["libm"] }
+embassy-time-driver = "0.2.2"
+
+# rp235x-hal = { version = "0.3", features = [
+#     "rt",
+#     "critical-section-impl",
+#     "rom-func-cache",
+#     "dcp-fast-f64",
+# ] }
