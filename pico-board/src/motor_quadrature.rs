@@ -1,118 +1,77 @@
-use core::{
-    f32::consts::{self, PI},
-    ops::Sub,
-};
 use embassy_rp::adc;
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use fixed::traits::ToFixed;
-
 use fixed::types::I32F32;
+use core::cell::Cell;
+use core::f32::consts;
 
-#[derive(Copy, Clone, PartialEq)]
-pub enum Sector {
-    S0,
-    S1, // ^
-    S2, // | clockwise (CW)
-    S3, // |
-    S4,
-    S5,
-}
+#[embassy_executor::task]
+pub async fn motor_quadrature_task(
+    adc: &'static mut adc::Adc<'static, adc::Blocking>,
+    hall_a_pin: &'static mut adc::Channel<'static>,
+    hall_b_pin: &'static mut adc::Channel<'static>,
+    hall_c_pin: &'static mut adc::Channel<'static>,
+    motor_cum_angle_mutex: &'static Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    led_command_ch: &'static Channel<CriticalSectionRawMutex, crate::rgb_led::Command, 16>
+) {
+    let mut tracker = HallAngleTracker::new();
 
-impl Sector {
-    pub fn from_hall(a: bool, b: bool, c: bool) -> Result<Self, &'static str> {
-        match (a, b, c) {
-            (true, true, false) => Ok(Sector::S0),
-            (true, false, false) => Ok(Sector::S1),
-            (true, false, true) => Ok(Sector::S2),
-            (false, false, true) => Ok(Sector::S3),
-            (false, true, true) => Ok(Sector::S4),
-            (false, true, false) => Ok(Sector::S5),
-            (_, _, _) => Err(
-                "Hall sensor readings are inconsistent. Make sure hall sensor is powered and connected.",
-            ),
-        }
-    }
+    let ticker_duration = embassy_time::Duration::from_hz(3000);
+    let ticker_initial_time = embassy_time::Instant::now();
+    let mut ticker = embassy_time::Ticker::every(ticker_duration);
+    ticker.reset_at(ticker_initial_time);
+    let mut iter_idx: u32 = 0;
 
-    pub fn get_number(&self) -> u8 {
-        match self {
-            Self::S0 => 0,
-            Self::S1 => 1,
-            Self::S2 => 2,
-            Self::S3 => 3,
-            Self::S4 => 4,
-            Self::S5 => 5,
-        }
-    }
-}
+    loop {
+        use crate::constants::{HA_AMP, HA_AVG, HB_AMP, HB_AVG, HC_AMP, HC_AVG};
 
-#[derive(Copy, Clone, PartialEq, Debug, Default)]
-pub struct SectorAngle(pub i64);
+        let ha_raw = adc.blocking_read(hall_a_pin).unwrap();
+        let hb_raw = adc.blocking_read(hall_b_pin).unwrap();
+        let hc_raw = adc.blocking_read(hall_c_pin).unwrap();
 
-impl SectorAngle {
-    pub fn rotate_by(self, angle: i64) -> SectorAngle {
-        SectorAngle(self.0 + angle)
-    }
+        let ha_norm: f32 = (ha_raw - HA_AVG) as f32 / HA_AMP as f32;
+        let hb_norm: f32 = (hb_raw - HB_AVG) as f32 / HB_AMP as f32;
+        let hc_norm: f32 = (hc_raw - HC_AVG) as f32 / HC_AMP as f32;
 
-    pub fn to_sector(self) -> Sector {
-        match self.0.rem_euclid(6) {
-            0 => Sector::S0,
-            1 => Sector::S1,
-            2 => Sector::S2,
-            3 => Sector::S3,
-            4 => Sector::S4,
-            5 => Sector::S5,
-            _ => Sector::S0,
-        }
-    }
+        let new_angle = tracker.update(ha_norm, hb_norm, hc_norm).unwrap();
 
-    pub fn angle_rel_to_zero(self) -> f32 {
-        return 2.0 * PI * (self.0.div_euclid(6)) as f32;
-        // test cases
-        // 0 -> 0
-        // 1 -> 0
-        // 2 -> 0
-        // 5 -> 0
-        // 6 -> 2pi
-        // 7 -> 2pi
-        // 11 -> 2pi
-        // 12 -> 4pi
-        // -1 -> -2pi
-        // -2 -> -2pi
-        // -5 -> -2pi
-        // -6 -> -2pi
-        // -7 -> -4pi
-    }
+        motor_cum_angle_mutex.lock(|cell| cell.set(new_angle));
 
-    pub fn update_angle(self, new_sector: Sector) -> Result<SectorAngle, &'static str> {
-        let old_sector = self.to_sector();
+        let finish_time = embassy_time::Instant::now();
 
-        return match (old_sector, new_sector) {
-            // no rotation
-            (Sector::S0, Sector::S0) => Ok(self),
-            (Sector::S1, Sector::S1) => Ok(self),
-            (Sector::S2, Sector::S2) => Ok(self),
-            (Sector::S3, Sector::S3) => Ok(self),
-            (Sector::S4, Sector::S4) => Ok(self),
-            (Sector::S5, Sector::S5) => Ok(self),
+        let deadline_time =
+            ticker_initial_time + ticker_duration.checked_mul(iter_idx + 1).unwrap();
 
-            // counter-clockwise rotations
-            (Sector::S0, Sector::S1) => Ok(self.rotate_by(1)),
-            (Sector::S1, Sector::S2) => Ok(self.rotate_by(1)),
-            (Sector::S2, Sector::S3) => Ok(self.rotate_by(1)),
-            (Sector::S3, Sector::S4) => Ok(self.rotate_by(1)),
-            (Sector::S4, Sector::S5) => Ok(self.rotate_by(1)),
-            (Sector::S5, Sector::S0) => Ok(self.rotate_by(1)),
+        let fail_anim = crate::anim::Pulse::new(
+            color::palette::css::PURPLE.discard_alpha(),
+            embassy_time::Duration::from_millis(0),
+            embassy_time::Duration::from_millis(200),
+            embassy_time::Duration::from_millis(400),
+            embassy_time::Duration::from_millis(500),
+            2,
+        );
 
-            // clockwise rotations
-            (Sector::S0, Sector::S5) => Ok(self.rotate_by(-1)),
-            (Sector::S1, Sector::S0) => Ok(self.rotate_by(-1)),
-            (Sector::S2, Sector::S1) => Ok(self.rotate_by(-1)),
-            (Sector::S3, Sector::S2) => Ok(self.rotate_by(-1)),
-            (Sector::S4, Sector::S3) => Ok(self.rotate_by(-1)),
-            (Sector::S5, Sector::S4) => Ok(self.rotate_by(-1)),
-
-            // error
-            (_, _) => Err("Failed to track hall sensor commutation"),
+        let spare_time = if finish_time < deadline_time {
+            (deadline_time - finish_time).as_micros() as i32 // On time
+        } else {
+            -((finish_time - deadline_time).as_micros() as i32) // Late
         };
+
+        if spare_time < 0 {
+            // Late
+            led_command_ch
+                .send(crate::rgb_led::Command::Transient(crate::anim::Animation::Pulse(
+                    fail_anim,
+                )))
+                .await;
+            defmt::error!("Motor update loop late by {}", &spare_time);
+        }
+
+        ticker.next().await;
+
+        iter_idx += 1;
     }
 }
 
@@ -146,13 +105,10 @@ impl HallAngleTracker {
         hb_norm: f32,
         hc_norm: f32,
     ) -> Result<I32F32, &'static str> {
-        // This may fail if the hall sensor isn't connected to the ADC correctly
-        // let new_sector = Sector::from_hall(ha_norm > 0., hb_norm > 0., hc_norm > 0.)?;
 
-        // This may fail if the motor is spinning faster than 12,000 RPM
+        // Quadrature may fail if the motor is spinning faster than 12,000 RPM
         // (which is faster than its free speed) or the motor quadrature tracker
         // loop isn't running at the required 3 kHz
-        // self.sector_angle = self.sector_angle.update_angle(new_sector)?;
 
         use crate::constants::SQRT_3;
         use consts::{PI, TAU};

@@ -135,6 +135,7 @@ impl FadeInFadeOut {
 
 impl Rainbow {
     pub fn new(duration: embassy_time::Duration) -> Self {
+
         defmt::assert!(duration.as_ticks() >= 1);
 
         Self { duration: duration }

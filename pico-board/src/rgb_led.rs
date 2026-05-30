@@ -1,4 +1,6 @@
+use embassy_futures::select::Either;
 use embassy_rp::pwm;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use fixed::traits::ToFixed;
 
 /// LED "tick" rate, which is the rate at which an LED animation is played at in Hz.
@@ -56,4 +58,75 @@ pub fn set_rgb<'b>(
 
     led_red_a.set_config(&led_red_a_config);
     led_green_a_blue_b.set_config(&led_green_a_blue_b_config);
+}
+
+#[embassy_executor::task]
+pub async fn led_driver_task(
+    led_command_signal: &'static embassy_sync::channel::Channel<
+        CriticalSectionRawMutex,
+        Command,
+        16,
+    >,
+    led_red_a: &'static mut pwm::Pwm<'static>,
+    led_green_a_blue_b: &'static mut pwm::Pwm<'static>,
+) {
+    let mut led_pwm_update_loop =
+        async |curr_anim: &crate::anim::Animation,
+               is_loop: bool,
+               t_anim_start: Option<embassy_time::Instant>| {
+            let t_anim_start = match t_anim_start {
+                Some(instant) => instant,
+                None => embassy_time::Instant::now(),
+            };
+            let mut led_ticker = embassy_time::Ticker::every(LED_TICK_PERIOD);
+            led_ticker.reset_at(t_anim_start);
+            let deadline = t_anim_start + curr_anim.duration();
+
+            loop {
+                let curr_time = embassy_time::Instant::now();
+                if !is_loop && curr_time >= deadline {
+                    break;
+                }
+                let t_rel = curr_time - t_anim_start;
+                let color = curr_anim.eval(t_rel);
+                set_rgb(led_red_a, led_green_a_blue_b, color);
+                led_ticker.next().await;
+            }
+        };
+
+    let mut looping_anim = crate::anim::Animation::Off;
+    // For transient anim, keep track of start time as an Instant
+    // That way if a new looping command fires, it won't reset the transient
+    // animation's timer
+    let mut transient_anim: Option<(crate::anim::Animation, embassy_time::Instant)> = None;
+    loop {
+        match embassy_futures::select::select(
+            led_command_signal.receive(),
+            match transient_anim {
+                // play a transient animation with given start time
+                Some(ref value) => led_pwm_update_loop(&value.0, false, Some(value.1)),
+                // play a looping animation, and start it now (None)
+                None => led_pwm_update_loop(&looping_anim, true, None),
+            },
+        )
+        .await
+        {
+            Either::First(command) => {
+                match command {
+                    Command::Transient(new_transient_anim) => {
+                        transient_anim = Some((new_transient_anim, embassy_time::Instant::now()));
+                    }
+                    Command::Looping(new_looping_animation) => {
+                        looping_anim = new_looping_animation;
+                    }
+                };
+            }
+            Either::Second(_) => {
+                // the looping animation will never end, so this must be a
+                // transient animation ending. So just pop the transient
+                // animation
+                transient_anim = None;
+            }
+        }
+    }
 }
