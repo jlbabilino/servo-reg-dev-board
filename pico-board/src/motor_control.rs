@@ -48,7 +48,7 @@ pub async fn motor_control_task(
                 esc_pwm.set_duty_cycle(0);
                 loop {
                     // nothing else to do so just sleep 😴
-                    embassy_time::Timer::after(embassy_time::Duration::MAX).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
                 }
             }
             MotorState::Brake => {
@@ -57,7 +57,7 @@ pub async fn motor_control_task(
                 esc_dir_pin.set_high();
                 esc_pwm.set_duty_cycle(0);
                 loop {
-                    embassy_time::Timer::after(embassy_time::Duration::MAX).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
                 }
             }
             MotorState::Speed(speed) => {
@@ -66,7 +66,7 @@ pub async fn motor_control_task(
                 esc_brake_pin.set_high();
                 set_motor_speed(esc_dir_pin, esc_pwm, speed);
                 loop {
-                    embassy_time::Timer::after(embassy_time::Duration::MAX).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
                 }
             }
             MotorState::Position(target_angle) => {

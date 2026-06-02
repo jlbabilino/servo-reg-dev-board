@@ -19,6 +19,7 @@ mod rgb_led;
 mod util;
 
 use core::cell::Cell;
+use core::cell::RefCell;
 
 use embassy_rp::gpio::Level;
 use embassy_rp::peripherals::DMA_CH0;
@@ -40,8 +41,13 @@ use static_cell::StaticCell;
 
 use anim::Rainbow;
 use motor_control::MotorState;
+use network::ExclusiveW5500;
 
 use {defmt_rtt as _, panic_probe as _};
+
+defmt::timestamp!("[t = {=u64:us} s]", {
+    embassy_time::Instant::now().as_micros()
+});
 
 enum OverallState {
     Disconnected,
@@ -55,7 +61,7 @@ static MOTOR_CUM_ANGLE_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
 static MOTOR_STATE_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, MotorState> =
     Signal::new();
 
-static LED_COMMAND_CH: embassy_sync::channel::Channel<
+pub static LED_COMMAND_CH: embassy_sync::channel::Channel<
     CriticalSectionRawMutex,
     rgb_led::Command,
     16, // should be processed instantly but just in case
@@ -86,17 +92,6 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     static TEST_BUTTON_A_CELL: StaticCell<gpio::Input<'static>> = StaticCell::new();
     static TEST_BUTTON_B_CELL: StaticCell<gpio::Input<'static>> = StaticCell::new();
-
-    static W5500_INT_CELL: StaticCell<gpio::Input<'static>> = StaticCell::new();
-    static W5500_CELL: StaticCell<
-        W5500<
-            ExclusiveDevice<
-                embassy_rp::spi::Spi<'static, SPI0, embassy_rp::spi::Async>,
-                gpio::Output<'static>,
-                embassy_time::Delay,
-            >,
-        >,
-    > = StaticCell::new();
 
     // Bind peripherals
     let led_green_a_blue_b = LED_GREEN_A_BLUE_B_CELL.init(pwm::Pwm::new_output_ab(
@@ -145,27 +140,11 @@ async fn main(spawner: embassy_executor::Spawner) {
     );
     let cs = gpio::Output::new(p.PIN_17, gpio::Level::High);
 
-    let w5500_int = W5500_INT_CELL.init(gpio::Input::new(p.PIN_21, gpio::Pull::Up));
+    let w5500_int = gpio::Input::new(p.PIN_21, gpio::Pull::Up);
 
     use w5500_ll::eh1::vdm::W5500;
 
-    let w5500 = W5500_CELL.init(W5500::new(
-        ExclusiveDevice::new(eth_spi, cs, embassy_time::Delay).unwrap(),
-    ));
-
-    let disabled_anim = anim::FadeInFadeOut::new(
-        color::palette::css::BLUE.discard_alpha(),
-        embassy_time::Duration::from_secs(3),
-    );
-
-    let enabled_anim = anim::Pulse::new(
-        color::palette::css::YELLOW.discard_alpha(),
-        embassy_time::Duration::from_millis(0),
-        embassy_time::Duration::from_millis(150),
-        embassy_time::Duration::from_millis(300),
-        embassy_time::Duration::from_millis(600),
-        2,
-    );
+    let w5500 = W5500::new(ExclusiveDevice::new(eth_spi, cs, embassy_time::Delay).unwrap());
 
     // A high-frequency loop (~3 kHz) to track the motor's rotation
     // Modifies a mutex to set share the current rotation angle with other tasks
@@ -210,10 +189,19 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(test_motor_ctrl(&MOTOR_STATE_SIGNAL, test_button_a, test_button_b).unwrap());
 
     // LED_COMMAND_CH
-    //     .send(rgb_led::Command::Looping(anim::Animation::Rainbow(
-    //         Rainbow::new(embassy_time::Duration::from_secs(2)),
+    //     .send(rgb_led::Command::Looping(anim::Animation::FadeInFadeOut(
+    //         anim::FadeInFadeOut::new(
+    //             color::palette::css::BLUE.discard_alpha(),
+    //             embassy_time::Duration::from_secs(3),
+    //         ),
     //     )))
     //     .await;
+
+    LED_COMMAND_CH
+        .send(rgb_led::Command::Looping(anim::Animation::Rainbow(
+            anim::Rainbow::new(embassy_time::Duration::from_secs(2)),
+        )))
+        .await;
 }
 
 #[embassy_executor::task]
@@ -222,6 +210,18 @@ async fn test_motor_ctrl(
     test_button_a: &'static mut gpio::Input<'static>,
     test_button_b: &'static mut gpio::Input<'static>,
 ) {
+    let disabled_anim = rgb_led::Command::Transient(anim::Animation::Rainbow(Rainbow::new(
+        embassy_time::Duration::from_secs(2),
+    )));
+
+    let enabled_anim = rgb_led::Command::Transient(anim::Animation::Pulse(anim::Pulse::new(
+        color::palette::css::RED.discard_alpha(),
+        embassy_time::Duration::from_millis(50),
+        embassy_time::Duration::from_millis(50),
+        embassy_time::Duration::from_millis(100),
+        embassy_time::Duration::from_millis(200),
+        2,
+    )));
     let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(40));
     loop {
         match (test_button_a.get_level(), test_button_b.get_level()) {
@@ -230,9 +230,11 @@ async fn test_motor_ctrl(
             }
             (Level::High, Level::Low) => {
                 motor_state_signal.signal(MotorState::Speed(0.1));
+                LED_COMMAND_CH.send(disabled_anim).await;
             }
             (Level::Low, Level::High) => {
                 motor_state_signal.signal(MotorState::Speed(-0.1));
+                LED_COMMAND_CH.send(enabled_anim).await;
             }
             (Level::High, Level::High) => {
                 motor_state_signal.signal(MotorState::Disabled);
@@ -244,7 +246,7 @@ async fn test_motor_ctrl(
 
 #[embassy_executor::task]
 async fn monitor_task() {
-    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(2));
+    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(20));
 
     loop {
         let cum_theta: f32 = MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get()).to_num();

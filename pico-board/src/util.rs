@@ -24,3 +24,33 @@ pub fn div(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> f32 {
 
     div_ticks
 }
+
+pub const fn const_checked_sub(
+    lhs: embassy_time::Duration,
+    rhs: embassy_time::Duration,
+) -> Option<embassy_time::Duration> {
+    let Some(result) = lhs.as_ticks().checked_sub(rhs.as_ticks()) else {
+        return None;
+    };
+    Some(embassy_time::Duration::from_ticks(result))
+}
+
+pub const fn const_checked_add(
+    lhs: embassy_time::Duration,
+    rhs: embassy_time::Duration,
+) -> Option<embassy_time::Duration> {
+    let Some(result) = lhs.as_ticks().checked_add(rhs.as_ticks()) else {
+        return None;
+    };
+    Some(embassy_time::Duration::from_ticks(result))
+}
+
+pub const fn const_checked_mul(
+    lhs: embassy_time::Duration,
+    rhs: u64,
+) -> Option<embassy_time::Duration> {
+    let Some(result) = lhs.as_ticks().checked_mul(rhs) else {
+        return None;
+    };
+    Some(embassy_time::Duration::from_ticks(result))
+}

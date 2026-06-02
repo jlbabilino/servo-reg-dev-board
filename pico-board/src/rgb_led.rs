@@ -8,6 +8,7 @@ use fixed::traits::ToFixed;
 /// consuming too much CPU time.
 pub const LED_TICK_PERIOD: embassy_time::Duration = embassy_time::Duration::from_hz(100);
 
+#[derive(Debug, Copy, Clone)]
 pub enum Command {
     Transient(crate::anim::Animation),
     Looping(crate::anim::Animation),
@@ -114,9 +115,11 @@ pub async fn led_driver_task(
             Either::First(command) => {
                 match command {
                     Command::Transient(new_transient_anim) => {
+                        defmt::debug!("New transient animation");
                         transient_anim = Some((new_transient_anim, embassy_time::Instant::now()));
                     }
                     Command::Looping(new_looping_animation) => {
+                        defmt::debug!("New looping animation");
                         looping_anim = new_looping_animation;
                     }
                 };

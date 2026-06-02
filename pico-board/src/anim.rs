@@ -1,3 +1,4 @@
+#[derive(Debug, Copy, Clone)]
 pub enum Animation {
     Off,
     Solid(Solid),
@@ -8,10 +9,14 @@ pub enum Animation {
 
 use color::{OpaqueColor, Srgb};
 
+use crate::util::{const_checked_add, const_checked_mul, const_checked_sub};
+
+trait ExtFormat: defmt::Format {}
+
 impl Animation {
     pub fn duration(&self) -> embassy_time::Duration {
         match self {
-            Self::Off => embassy_time::Duration::MAX,
+            Self::Off => embassy_time::Duration::from_secs(100000),
             Self::Solid(solid) => solid.duration,
             Self::Pulse(pulse) => pulse.duration,
             Self::FadeInFadeOut(fade_in_fade_out) => fade_in_fade_out.duration,
@@ -57,34 +62,36 @@ impl Animation {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Solid {
     color: OpaqueColor<Srgb>,
     duration: embassy_time::Duration,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Pulse {
     color: OpaqueColor<Srgb>,
     initial_delay: embassy_time::Duration,
     final_delay: embassy_time::Duration,
     period: embassy_time::Duration,
-    num_pulses: u32,
     on_width: embassy_time::Duration,
-    off_width: embassy_time::Duration,
     duration: embassy_time::Duration,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct FadeInFadeOut {
     color: color::OpaqueColor<Srgb>,
     duration: embassy_time::Duration,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Rainbow {
     duration: embassy_time::Duration,
 }
 
 impl Solid {
-    pub fn new(color: OpaqueColor<Srgb>, duration: embassy_time::Duration) -> Self {
-        defmt::assert!(duration.as_ticks() >= 1);
+    pub const fn new(color: OpaqueColor<Srgb>, duration: embassy_time::Duration) -> Self {
+        core::assert!(duration.as_ticks() >= 1);
         Solid {
             color: color,
             duration: duration,
@@ -93,38 +100,41 @@ impl Solid {
 }
 
 impl Pulse {
-    pub fn new(
+    pub const fn new(
         color: OpaqueColor<Srgb>,
         initial_delay: embassy_time::Duration,
         pulse_width: embassy_time::Duration,
         period: embassy_time::Duration,
         final_delay: embassy_time::Duration,
-        num_pulses: u32,
+        num_pulses: u64,
     ) -> Self {
-        defmt::assert!(period.as_ticks() >= 1);
-        defmt::assert!(pulse_width <= period);
-        defmt::assert!(num_pulses >= 1);
+        core::assert!(period.as_ticks() >= 1);
+        core::assert!(pulse_width.as_ticks() <= period.as_ticks());
+        core::assert!(num_pulses >= 1);
 
-        let off_width = period - pulse_width;
-        let duration =
-            initial_delay + (num_pulses * pulse_width) + (num_pulses - 1) * off_width + final_delay;
+        let off_width = const_checked_sub(period, pulse_width).unwrap();
+        let on_total_duration = const_checked_mul(pulse_width, num_pulses).unwrap();
+        let off_total_duration = const_checked_mul(off_width, num_pulses - 1).unwrap();
+
+        // duration = initial_delay + on_total_duration + off_total_duration + final_delay
+        let delays_total = const_checked_add(initial_delay, final_delay).unwrap();
+        let on_off_duration = const_checked_add(on_total_duration, off_total_duration).unwrap();
+        let duration = const_checked_add(on_off_duration, delays_total).unwrap();
 
         Pulse {
             color: color,
             initial_delay: initial_delay,
             final_delay: final_delay,
             period: period,
-            num_pulses: num_pulses,
             on_width: pulse_width,
-            off_width: off_width,
             duration: duration,
         }
     }
 }
 
 impl FadeInFadeOut {
-    pub fn new(color: color::OpaqueColor<Srgb>, duration: embassy_time::Duration) -> Self {
-        defmt::assert!(duration.as_ticks() >= 1);
+    pub const fn new(color: color::OpaqueColor<Srgb>, duration: embassy_time::Duration) -> Self {
+        core::assert!(duration.as_ticks() >= 1);
 
         Self {
             color: color,
@@ -134,9 +144,8 @@ impl FadeInFadeOut {
 }
 
 impl Rainbow {
-    pub fn new(duration: embassy_time::Duration) -> Self {
-
-        defmt::assert!(duration.as_ticks() >= 1);
+    pub const fn new(duration: embassy_time::Duration) -> Self {
+        core::assert!(duration.as_ticks() >= 1);
 
         Self { duration: duration }
     }

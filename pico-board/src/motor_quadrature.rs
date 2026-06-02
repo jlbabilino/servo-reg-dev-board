@@ -1,11 +1,11 @@
+use core::cell::Cell;
+use core::f32::consts;
 use embassy_rp::adc;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use fixed::traits::ToFixed;
 use fixed::types::I32F32;
-use core::cell::Cell;
-use core::f32::consts;
 
 #[embassy_executor::task]
 pub async fn motor_quadrature_task(
@@ -14,7 +14,7 @@ pub async fn motor_quadrature_task(
     hall_b_pin: &'static mut adc::Channel<'static>,
     hall_c_pin: &'static mut adc::Channel<'static>,
     motor_cum_angle_mutex: &'static Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    led_command_ch: &'static Channel<CriticalSectionRawMutex, crate::rgb_led::Command, 16>
+    led_command_ch: &'static Channel<CriticalSectionRawMutex, crate::rgb_led::Command, 16>,
 ) {
     let mut tracker = HallAngleTracker::new();
 
@@ -31,9 +31,9 @@ pub async fn motor_quadrature_task(
         let hb_raw = adc.blocking_read(hall_b_pin).unwrap();
         let hc_raw = adc.blocking_read(hall_c_pin).unwrap();
 
-        let ha_norm: f32 = (ha_raw - HA_AVG) as f32 / HA_AMP as f32;
-        let hb_norm: f32 = (hb_raw - HB_AVG) as f32 / HB_AMP as f32;
-        let hc_norm: f32 = (hc_raw - HC_AVG) as f32 / HC_AMP as f32;
+        let ha_norm: f32 = (ha_raw as f32 - HA_AVG as f32) as f32 / HA_AMP as f32;
+        let hb_norm: f32 = (hb_raw as f32 - HB_AVG as f32) as f32 / HB_AMP as f32;
+        let hc_norm: f32 = (hc_raw as f32 - HC_AVG as f32) as f32 / HC_AMP as f32;
 
         let new_angle = tracker.update(ha_norm, hb_norm, hc_norm).unwrap();
 
@@ -62,9 +62,9 @@ pub async fn motor_quadrature_task(
         if spare_time < 0 {
             // Late
             led_command_ch
-                .send(crate::rgb_led::Command::Transient(crate::anim::Animation::Pulse(
-                    fail_anim,
-                )))
+                .send(crate::rgb_led::Command::Transient(
+                    crate::anim::Animation::Pulse(fail_anim),
+                ))
                 .await;
             defmt::error!("Motor update loop late by {}", &spare_time);
         }
@@ -105,7 +105,6 @@ impl HallAngleTracker {
         hb_norm: f32,
         hc_norm: f32,
     ) -> Result<I32F32, &'static str> {
-
         // Quadrature may fail if the motor is spinning faster than 12,000 RPM
         // (which is faster than its free speed) or the motor quadrature tracker
         // loop isn't running at the required 3 kHz
