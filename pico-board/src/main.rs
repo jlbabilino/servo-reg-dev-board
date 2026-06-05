@@ -19,12 +19,10 @@ mod rgb_led;
 mod util;
 
 use core::cell::Cell;
-use core::cell::RefCell;
 
 use embassy_rp::gpio::Level;
 use embassy_rp::peripherals::DMA_CH0;
 use embassy_rp::peripherals::DMA_CH1;
-use embassy_rp::peripherals::SPI0;
 use embassy_rp::pwm;
 use embassy_rp::pwm::SetDutyCycle;
 use embassy_rp::spi;
@@ -37,11 +35,9 @@ use embassy_rp::gpio;
 use embassy_sync::blocking_mutex::Mutex;
 
 use fixed::types::I32F32;
-use static_cell::StaticCell;
 
 use anim::Rainbow;
 use motor_control::MotorState;
-use network::ExclusiveW5500;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -49,11 +45,11 @@ defmt::timestamp!("[t = {=u64:us} s]", {
     embassy_time::Instant::now().as_micros()
 });
 
-enum OverallState {
-    Disconnected,
-    Disabled,
-    Enabled,
-}
+// enum OverallState {
+//     Disconnected,
+//     Disabled,
+//     Enabled,
+// }
 
 static MOTOR_CUM_ANGLE_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
     Mutex::new(Cell::new(I32F32::const_from_int(0)));
@@ -75,60 +71,28 @@ embassy_rp::bind_interrupts!(struct Irqs {
 async fn main(spawner: embassy_executor::Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    // Static cells for each peripheral
-    static LED_GREEN_A_BLUE_B_CELL: StaticCell<pwm::Pwm<'static>> = StaticCell::new();
-    static LED_RED_A_CELL: StaticCell<pwm::Pwm<'static>> = StaticCell::new();
-
-    static ADC_CELL: StaticCell<adc::Adc<'static, adc::Blocking>> = StaticCell::new();
-
-    static HALL_A_PIN_CELL: StaticCell<adc::Channel<'static>> = StaticCell::new();
-    static HALL_B_PIN_CELL: StaticCell<adc::Channel<'static>> = StaticCell::new();
-    static HALL_C_PIN_CELL: StaticCell<adc::Channel<'static>> = StaticCell::new();
-
-    static ESC_STOP_PIN_CELL: StaticCell<gpio::OutputOpenDrain<'static>> = StaticCell::new();
-    static ESC_BRAKE_PIN_CELL: StaticCell<gpio::OutputOpenDrain<'static>> = StaticCell::new();
-    static ESC_DIR_PIN_CELL: StaticCell<gpio::OutputOpenDrain<'static>> = StaticCell::new();
-    static ESC_PWM_PIN_CELL: StaticCell<pwm::Pwm<'static>> = StaticCell::new();
-
-    static TEST_BUTTON_A_CELL: StaticCell<gpio::Input<'static>> = StaticCell::new();
-    static TEST_BUTTON_B_CELL: StaticCell<gpio::Input<'static>> = StaticCell::new();
-
     // Bind peripherals
-    let led_green_a_blue_b = LED_GREEN_A_BLUE_B_CELL.init(pwm::Pwm::new_output_ab(
-        p.PWM_SLICE3,
-        p.PIN_6,
-        p.PIN_7,
-        Default::default(),
-    ));
-    let led_red_a = LED_RED_A_CELL.init(pwm::Pwm::new_output_a(
-        p.PWM_SLICE4,
-        p.PIN_8,
-        Default::default(),
-    ));
+    let mut led_green_a_blue_b =
+        pwm::Pwm::new_output_ab(p.PWM_SLICE3, p.PIN_6, p.PIN_7, Default::default());
+    let led_red_a = pwm::Pwm::new_output_a(p.PWM_SLICE4, p.PIN_8, Default::default());
 
     led_green_a_blue_b.set_duty_cycle_fully_on().unwrap();
 
-    let adc = ADC_CELL.init(adc::Adc::new_blocking(p.ADC, Default::default()));
+    let adc = adc::Adc::new_blocking(p.ADC, Default::default());
 
-    let hall_a_pin = HALL_A_PIN_CELL.init(adc::Channel::new_pin(p.PIN_28, gpio::Pull::None));
-    let hall_b_pin = HALL_B_PIN_CELL.init(adc::Channel::new_pin(p.PIN_27, gpio::Pull::None));
-    let hall_c_pin = HALL_C_PIN_CELL.init(adc::Channel::new_pin(p.PIN_26, gpio::Pull::None));
+    let hall_a_pin = adc::Channel::new_pin(p.PIN_28, gpio::Pull::None);
+    let hall_b_pin = adc::Channel::new_pin(p.PIN_27, gpio::Pull::None);
+    let hall_c_pin = adc::Channel::new_pin(p.PIN_26, gpio::Pull::None);
 
-    let esc_stop_pin =
-        ESC_STOP_PIN_CELL.init(gpio::OutputOpenDrain::new(p.PIN_2, gpio::Level::High));
-    let esc_brake_pin =
-        ESC_BRAKE_PIN_CELL.init(gpio::OutputOpenDrain::new(p.PIN_3, gpio::Level::High));
-    let esc_dir_pin = ESC_DIR_PIN_CELL.init(gpio::OutputOpenDrain::new(p.PIN_4, gpio::Level::High));
+    let esc_stop_pin = gpio::OutputOpenDrain::new(p.PIN_2, gpio::Level::High);
+    let esc_brake_pin = gpio::OutputOpenDrain::new(p.PIN_3, gpio::Level::High);
+    let esc_dir_pin = gpio::OutputOpenDrain::new(p.PIN_4, gpio::Level::High);
 
     let esc_pwm_config = motor_control::pwm_config();
-    let esc_pwm = ESC_PWM_PIN_CELL.init(pwm::Pwm::new_output_b(
-        p.PWM_SLICE2,
-        p.PIN_5,
-        esc_pwm_config,
-    ));
+    let esc_pwm = pwm::Pwm::new_output_b(p.PWM_SLICE2, p.PIN_5, esc_pwm_config);
 
-    let test_button_a = TEST_BUTTON_A_CELL.init(gpio::Input::new(p.PIN_14, gpio::Pull::Up));
-    let test_button_b = TEST_BUTTON_B_CELL.init(gpio::Input::new(p.PIN_15, gpio::Pull::Up));
+    let test_button_a = gpio::Input::new(p.PIN_14, gpio::Pull::Up);
+    let test_button_b = gpio::Input::new(p.PIN_15, gpio::Pull::Up);
 
     // Initialize W5500 ethernet module
     let mut spi_cfg = spi::Config::default();
@@ -207,8 +171,8 @@ async fn main(spawner: embassy_executor::Spawner) {
 #[embassy_executor::task]
 async fn test_motor_ctrl(
     motor_state_signal: &'static Signal<CriticalSectionRawMutex, MotorState>,
-    test_button_a: &'static mut gpio::Input<'static>,
-    test_button_b: &'static mut gpio::Input<'static>,
+    test_button_a: gpio::Input<'static>,
+    test_button_b: gpio::Input<'static>,
 ) {
     let disabled_anim = rgb_led::Command::Transient(anim::Animation::Rainbow(Rainbow::new(
         embassy_time::Duration::from_secs(2),
@@ -251,7 +215,7 @@ async fn monitor_task() {
     loop {
         let cum_theta: f32 = MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get()).to_num();
 
-        defmt::info!("angle = {} deg", cum_theta * (180. / core::f32::consts::PI),);
+        // defmt::info!("angle = {} deg", cum_theta * (180. / core::f32::consts::PI),);
 
         ticker.next().await;
     }

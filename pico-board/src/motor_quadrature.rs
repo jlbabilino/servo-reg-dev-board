@@ -9,10 +9,10 @@ use fixed::types::I32F32;
 
 #[embassy_executor::task]
 pub async fn motor_quadrature_task(
-    adc: &'static mut adc::Adc<'static, adc::Blocking>,
-    hall_a_pin: &'static mut adc::Channel<'static>,
-    hall_b_pin: &'static mut adc::Channel<'static>,
-    hall_c_pin: &'static mut adc::Channel<'static>,
+    mut adc: adc::Adc<'static, adc::Blocking>,
+    mut hall_a_pin: adc::Channel<'static>,
+    mut hall_b_pin: adc::Channel<'static>,
+    mut hall_c_pin: adc::Channel<'static>,
     motor_cum_angle_mutex: &'static Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
     led_command_ch: &'static Channel<CriticalSectionRawMutex, crate::rgb_led::Command, 16>,
 ) {
@@ -27,9 +27,9 @@ pub async fn motor_quadrature_task(
     loop {
         use crate::constants::{HA_AMP, HA_AVG, HB_AMP, HB_AVG, HC_AMP, HC_AVG};
 
-        let ha_raw = adc.blocking_read(hall_a_pin).unwrap();
-        let hb_raw = adc.blocking_read(hall_b_pin).unwrap();
-        let hc_raw = adc.blocking_read(hall_c_pin).unwrap();
+        let ha_raw = adc.blocking_read(&mut hall_a_pin).unwrap();
+        let hb_raw = adc.blocking_read(&mut hall_b_pin).unwrap();
+        let hc_raw = adc.blocking_read(&mut hall_c_pin).unwrap();
 
         let ha_norm: f32 = (ha_raw as f32 - HA_AVG as f32) as f32 / HA_AMP as f32;
         let hb_norm: f32 = (hb_raw as f32 - HB_AVG as f32) as f32 / HB_AMP as f32;

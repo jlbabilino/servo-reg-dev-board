@@ -68,8 +68,8 @@ pub async fn led_driver_task(
         Command,
         16,
     >,
-    led_red_a: &'static mut pwm::Pwm<'static>,
-    led_green_a_blue_b: &'static mut pwm::Pwm<'static>,
+    mut led_red_a: pwm::Pwm<'static>,
+    mut led_green_a_blue_b: pwm::Pwm<'static>,
 ) {
     let mut led_pwm_update_loop =
         async |curr_anim: &crate::anim::Animation,
@@ -90,7 +90,7 @@ pub async fn led_driver_task(
                 }
                 let t_rel = curr_time - t_anim_start;
                 let color = curr_anim.eval(t_rel);
-                set_rgb(led_red_a, led_green_a_blue_b, color);
+                set_rgb(&mut led_red_a, &mut led_green_a_blue_b, color);
                 led_ticker.next().await;
             }
         };

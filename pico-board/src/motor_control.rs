@@ -9,7 +9,6 @@ use embassy_sync::{
     blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
     signal::Signal,
 };
-use fixed::traits::ToFixed;
 use fixed::types::I32F32;
 
 pub enum MotorState {
@@ -34,10 +33,10 @@ pub fn pwm_config() -> pwm::Config {
 pub async fn motor_control_task(
     motor_state_signal: &'static Signal<CriticalSectionRawMutex, MotorState>,
     motor_cum_angle_mutex: &'static Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    esc_stop_pin: &'static mut gpio::OutputOpenDrain<'static>,
-    esc_brake_pin: &'static mut gpio::OutputOpenDrain<'static>,
-    esc_dir_pin: &'static mut gpio::OutputOpenDrain<'static>,
-    esc_pwm: &'static mut pwm::Pwm<'static>,
+    mut esc_stop_pin: gpio::OutputOpenDrain<'static>,
+    mut esc_brake_pin: gpio::OutputOpenDrain<'static>,
+    mut esc_dir_pin: gpio::OutputOpenDrain<'static>,
+    mut esc_pwm: pwm::Pwm<'static>,
 ) {
     let mut motor_controller = async |state: &MotorState| -> ! {
         match state {
@@ -45,7 +44,7 @@ pub async fn motor_control_task(
                 esc_stop_pin.set_low();
                 esc_brake_pin.set_high();
                 esc_dir_pin.set_high();
-                esc_pwm.set_duty_cycle(0);
+                esc_pwm.set_duty_cycle(0).unwrap();
                 loop {
                     // nothing else to do so just sleep 😴
                     embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
@@ -55,7 +54,7 @@ pub async fn motor_control_task(
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_low();
                 esc_dir_pin.set_high();
-                esc_pwm.set_duty_cycle(0);
+                esc_pwm.set_duty_cycle(0).unwrap();
                 loop {
                     embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
                 }
@@ -64,7 +63,7 @@ pub async fn motor_control_task(
                 let speed = speed.clamp(-1., 1.);
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_high();
-                set_motor_speed(esc_dir_pin, esc_pwm, speed);
+                set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed);
                 loop {
                     embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
                 }
@@ -79,7 +78,7 @@ pub async fn motor_control_task(
                     let curr_angle = motor_cum_angle_mutex.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
                     let commanded_speed = kp * err;
-                    set_motor_speed(esc_dir_pin, esc_pwm, commanded_speed);
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, commanded_speed);
 
                     ticker.next().await;
                 }

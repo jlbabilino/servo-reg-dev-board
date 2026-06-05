@@ -1,6 +1,7 @@
 use core::cell::Cell;
 use core::cell::RefCell;
 use core::net::Ipv4Addr;
+use core::net::SocketAddrV4;
 
 use embassy_rp::gpio;
 use embassy_rp::peripherals::SPI0;
@@ -22,6 +23,7 @@ use w5500_ll::net::Eui48Addr;
 use w5500_ll::{Protocol, Registers, Sn};
 
 use crate::LED_COMMAND_CH;
+use crate::MOTOR_CUM_ANGLE_MUTEX;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -38,6 +40,7 @@ const TELEM_PORT: u16 = 15509;
 
 // Static IPV4 Config
 const IP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20); // Pico's static IP
+const PC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10); // TODO: get this from TCP, don't hardcode it
 const GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 const SUBNET: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
 const MAC_ADDR: Eui48Addr = Eui48Addr::new(0x02, 0x00, 0x11, 0x22, 0x33, 0x44); // arbitrary
@@ -78,18 +81,20 @@ const DISABLED_ANIM: crate::rgb_led::Command = crate::rgb_led::Command::Looping(
 ///
 
 #[embassy_executor::task]
-pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>) {
+pub async fn network_task(w5500: ExclusiveW5500, mut w5500_int: gpio::Input<'static>) {
     let mut w5500 = w5500;
 
-    set_interrupt_masks(&mut w5500);
+    configure_w5500(&mut w5500);
 
     embassy_time::Timer::after_millis(10).await;
 
     let mut last_hearbeat = Instant::now();
 
-    let test_mutex: Mutex<CriticalSectionRawMutex, Cell<i32>> = Mutex::new(Cell::new(12));
-
     // let out = test_mutex.lock(|cell| cell);
+
+    w5500
+        .udp_bind(TELEM_SOCKET, TELEM_PORT)
+        .expect("Failed to bind UDP socket");
 
     loop {
         // let (status, cmd) = w5500_mutex.lock(|cell| {
@@ -113,16 +118,8 @@ pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>
 
         match status {
             SocketStatus::Closed => {
-                defmt::info!("Listening CMD TCP server on port {}...", CMD_PORT);
-                // w5500.tcp_listen(CMD_SOCKET, CMD_PORT).unwrap();
-                const MODE: SocketMode =
-                    SocketMode::DEFAULT.set_protocol(Protocol::Tcp).enable_nd();
-                w5500.set_sn_mr(CMD_SOCKET, MODE).unwrap();
-                w5500.set_sn_port(CMD_SOCKET, CMD_PORT).unwrap();
-                w5500.set_sn_cr(CMD_SOCKET, SocketCommand::Open).unwrap();
-                while w5500.sn_sr(CMD_SOCKET).unwrap() != Ok(SocketStatus::Init) {}
-                w5500.set_sn_cr(CMD_SOCKET, SocketCommand::Listen).unwrap();
-                continue;
+                defmt::info!("Listening for CMD TCP server on port {}...", CMD_PORT);
+                w5500.tcp_listen(CMD_SOCKET, CMD_PORT).unwrap();
             }
             SocketStatus::CloseWait => {
                 defmt::info!("CMD TCP server disconnected by client.");
@@ -149,21 +146,26 @@ pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>
                     LED_COMMAND_CH.send(DISABLED_ANIM).await;
                     embassy_time::Timer::after_millis(100).await;
                 }
+                let pc_ip = w5500.sn_dipr(CMD_SOCKET).unwrap();
                 let dummy_data = [0xA4];
                 w5500.tcp_write(CMD_SOCKET, &dummy_data).unwrap();
+                let mut recv_buf: [u8; 1] = [0];
+                while let Ok(num_bytes) = w5500.udp_recv_from(TELEM_SOCKET, &mut recv_buf) {
+                    defmt::info!("UDP recv: {}", &recv_buf[0]);
+                }
+                let motor_rot: f32 = MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get()).to_num();
+                let packet = motor_rot.to_le_bytes();
+                w5500
+                    .udp_send_to(TELEM_SOCKET, &packet, &SocketAddrV4::new(pc_ip, TELEM_PORT))
+                    .expect("Couldn't send the udp thing");
             }
             _ => {}
         }
 
         // once interrupt fires, must be connected
-        // w5500_int.wait_for_low().await;
-        // defmt::debug!("W5500 Interrupt fired");
-
-        embassy_time::Timer::after_millis(100).await;
+        w5500_int.wait_for_low().await;
 
         while w5500_int.is_low() {
-            embassy_time::Timer::after_millis(20).await;
-
             let ir = w5500.ir().unwrap();
             if ir.unreach() {
                 defmt::info!("Client unreachable!");
@@ -171,26 +173,26 @@ pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>
                 w5500.set_ir(unreach_clr).unwrap();
             }
 
-            let sn_ir = w5500.sn_ir(CMD_SOCKET).unwrap();
-            if sn_ir.con_raised() {
+            let cmd_ir = w5500.sn_ir(CMD_SOCKET).unwrap();
+            if cmd_ir.con_raised() {
                 defmt::info!("CMD TCP Connected!");
                 LED_COMMAND_CH.send(ENABLED_ANIM).await;
                 last_hearbeat = Instant::now();
                 let con_clr = SocketInterrupt::DEFAULT.clear_con();
                 w5500.set_sn_ir(CMD_SOCKET, con_clr).unwrap();
             }
-            if sn_ir.discon_raised() {
+            if cmd_ir.discon_raised() {
                 defmt::info!("CMD TCP Disconnected!");
                 LED_COMMAND_CH.send(DISABLED_ANIM).await;
                 let discon_clr = SocketInterrupt::DEFAULT.clear_discon();
                 w5500.set_sn_ir(CMD_SOCKET, discon_clr).unwrap();
             }
-            if sn_ir.timeout_raised() {
+            if cmd_ir.timeout_raised() {
                 defmt::info!("CMD TCP socket timed out!");
                 let timeout_clr = SocketInterrupt::DEFAULT.clear_timeout();
                 w5500.set_sn_ir(CMD_SOCKET, timeout_clr).unwrap();
             }
-            if sn_ir.recv_raised() {
+            if cmd_ir.recv_raised() {
                 let mut buff = [0; 1024];
                 let num_bytes = w5500.tcp_read(CMD_SOCKET, &mut buff).unwrap();
                 let bytes: &[u8] = &buff[..num_bytes as usize];
@@ -198,12 +200,23 @@ pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>
                 const RECV_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_recv();
                 w5500.set_sn_ir(CMD_SOCKET, RECV_CLR).unwrap();
             }
-            if sn_ir.sendok_raised() {
+            if cmd_ir.sendok_raised() {
                 // defmt::info!("TX successful!");
                 last_hearbeat = Instant::now();
                 const SENDOK_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_sendok();
                 w5500.set_sn_ir(CMD_SOCKET, SENDOK_CLR).unwrap();
             }
+
+            let telem_ir = w5500.sn_ir(TELEM_SOCKET).unwrap();
+            if telem_ir.recv_raised() {
+                const RECV_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_recv();
+                w5500.set_sn_ir(TELEM_SOCKET, RECV_CLR).unwrap();
+            }
+            if telem_ir.sendok_raised() {
+                const SENDOK_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_sendok();
+                w5500.set_sn_ir(TELEM_SOCKET, SENDOK_CLR).unwrap();
+            }
+            embassy_time::Timer::after_millis(10).await;
         }
 
         // let mut rx_buffer = [0; 4096];
@@ -246,23 +259,21 @@ pub async fn network_task(w5500: ExclusiveW5500, w5500_int: gpio::Input<'static>
     }
 }
 
-fn set_interrupt_masks(w5500: &mut ExclusiveW5500) {
+fn configure_w5500(w5500: &mut ExclusiveW5500) {
     w5500.set_sipr(&IP_ADDR).unwrap();
     w5500.set_gar(&GATEWAY).unwrap();
     w5500.set_subr(&SUBNET).unwrap();
     w5500.set_shar(&MAC_ADDR).unwrap();
 
-    w5500.set_intlevel(0x00FA).unwrap(); // TODO: try to delete this and see if it still works
+    // w5500.set_intlevel(0x00FA).unwrap(); // TODO: try to delete this and see if it still works
 
     // Overall interrupts like ip conflicts,
     // const INT_MASK: w5500_ll::Interrupt = w5500_ll::Interrupt::DEFAULT.set_conflict().set_unreach();
-    const INT_MASK: w5500_ll::Interrupt = w5500_ll::Interrupt::DEFAULT.set_unreach();
+    const INT_MASK: w5500_ll::Interrupt = w5500_ll::Interrupt::DEFAULT;
     w5500.set_imr(INT_MASK).unwrap();
 
     // Enable interrupts for our two sockets
-    const SOCKET_INT_MASK: u8 = CMD_SOCKET.bitmask()
-    // | TELEM_SOCKET.bitmask()
-    ;
+    const SOCKET_INT_MASK: u8 = CMD_SOCKET.bitmask() | TELEM_SOCKET.bitmask();
     w5500.set_simr(SOCKET_INT_MASK).unwrap();
 
     // Interrupts for the CMD socket
@@ -275,15 +286,15 @@ fn set_interrupt_masks(w5500: &mut ExclusiveW5500) {
     w5500.set_sn_imr(CMD_SOCKET, CMD_SOCKET_INT_MASK).unwrap();
 
     // Interrupts for the TELEM socket
-    const TELEM_SOCKET_INT_MASK: SocketInterruptMask = SocketInterruptMask::ALL_MASKED
-        .unmask_con()
-        .unmask_discon()
-        .unmask_recv()
-        .unmask_sendok()
-        .unmask_timeout();
-    w5500
-        .set_sn_imr(TELEM_SOCKET, TELEM_SOCKET_INT_MASK)
-        .unwrap();
+    // const TELEM_SOCKET_INT_MASK: SocketInterruptMask = SocketInterruptMask::ALL_MASKED
+    //     .unmask_con()
+    //     .unmask_discon()
+    //     .unmask_recv()
+    //     .unmask_sendok()
+    //     .unmask_timeout();
+    // w5500
+    //     .set_sn_imr(TELEM_SOCKET, TELEM_SOCKET_INT_MASK)
+    //     .unwrap();
 
     // w5500.set_sn_kpalvtr(CMD_SOCKET, 0).unwrap();
     w5500
