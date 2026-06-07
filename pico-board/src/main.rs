@@ -34,6 +34,7 @@ use embassy_rp::adc;
 use embassy_rp::gpio;
 use embassy_sync::blocking_mutex::Mutex;
 
+use fixed::traits::ToFixed;
 use fixed::types::I32F32;
 
 use anim::Rainbow;
@@ -52,6 +53,9 @@ defmt::timestamp!("[t = {=u64:us} s]", {
 // }
 
 static MOTOR_CUM_ANGLE_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
+    Mutex::new(Cell::new(I32F32::const_from_int(0)));
+
+static COMMANDED_POS_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
     Mutex::new(Cell::new(I32F32::const_from_int(0)));
 
 static MOTOR_STATE_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, MotorState> =
@@ -91,20 +95,20 @@ async fn main(spawner: embassy_executor::Spawner) {
     let esc_pwm_config = motor_control::pwm_config();
     let esc_pwm = pwm::Pwm::new_output_b(p.PWM_SLICE2, p.PIN_5, esc_pwm_config);
 
-    let test_button_a = gpio::Input::new(p.PIN_14, gpio::Pull::Up);
-    let test_button_b = gpio::Input::new(p.PIN_15, gpio::Pull::Up);
+    let test_button_a = gpio::Input::new(p.PIN_17, gpio::Pull::Up);
+    let test_button_b = gpio::Input::new(p.PIN_16, gpio::Pull::Up);
 
     // Initialize W5500 ethernet module
     let mut spi_cfg = spi::Config::default();
     spi_cfg.frequency = 50_000_000;
 
-    let (eth_miso, eth_mosi, eth_clk) = (p.PIN_16, p.PIN_19, p.PIN_18);
+    let (eth_miso, eth_mosi, eth_clk) = (p.PIN_12, p.PIN_11, p.PIN_10);
     let eth_spi = spi::Spi::new(
-        p.SPI0, eth_clk, eth_mosi, eth_miso, p.DMA_CH0, p.DMA_CH1, Irqs, spi_cfg,
+        p.SPI1, eth_clk, eth_mosi, eth_miso, p.DMA_CH0, p.DMA_CH1, Irqs, spi_cfg,
     );
-    let cs = gpio::Output::new(p.PIN_17, gpio::Level::High);
+    let cs = gpio::Output::new(p.PIN_13, gpio::Level::High);
 
-    let w5500_int = gpio::Input::new(p.PIN_21, gpio::Pull::Up);
+    let w5500_int = gpio::Input::new(p.PIN_14, gpio::Pull::Up);
 
     use w5500_ll::eh1::vdm::W5500;
 
@@ -187,17 +191,21 @@ async fn test_motor_ctrl(
         2,
     )));
     let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(40));
+    // let mut curr_pos = 0_i32.to_fixed::<I32F32>();
     loop {
         match (test_button_a.get_level(), test_button_b.get_level()) {
             (Level::Low, Level::Low) => {
-                motor_state_signal.signal(MotorState::Brake);
+                motor_state_signal.signal(MotorState::Position(
+                    COMMANDED_POS_MUTEX.lock(|cell| cell.get()),
+                ));
             }
             (Level::High, Level::Low) => {
-                motor_state_signal.signal(MotorState::Speed(0.1));
+                motor_state_signal.signal(MotorState::Position(0_i32.to_fixed::<I32F32>()));
                 LED_COMMAND_CH.send(disabled_anim).await;
             }
             (Level::Low, Level::High) => {
-                motor_state_signal.signal(MotorState::Speed(-0.1));
+                // motor_state_signal.signal(MotorState::Speed(-0.1));
+                motor_state_signal.signal(MotorState::Position(62.83_f32.to_fixed::<I32F32>()));
                 LED_COMMAND_CH.send(enabled_anim).await;
             }
             (Level::High, Level::High) => {

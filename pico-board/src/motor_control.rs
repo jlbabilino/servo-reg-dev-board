@@ -69,16 +69,19 @@ pub async fn motor_control_task(
                 }
             }
             MotorState::Position(target_angle) => {
+                esc_stop_pin.set_high();
+                esc_brake_pin.set_high();
                 // Basic P controller
-                let kp: f32 = 0.3;
+                let kp: f32 = 0.002;
 
                 let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(200));
 
                 loop {
                     let curr_angle = motor_cum_angle_mutex.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
-                    let commanded_speed = kp * err;
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, commanded_speed);
+                    let commanded_speed = (kp * err).clamp(-0.1, 0.1);
+                    // defmt::info!("Commanded speed: {}", &commanded_speed);
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed);
 
                     ticker.next().await;
                 }
@@ -105,12 +108,17 @@ fn set_motor_speed(
     esc_pwm: &mut pwm::Pwm<'static>,
     commanded_speed: f32,
 ) {
+    let commanded_speed = commanded_speed.clamp(-1.0, 1.0);
     esc_dir_pin.set_level(if commanded_speed < 0.0 {
         gpio::Level::High
     } else {
         gpio::Level::Low
     });
+    // defmt::info!(
+    //     "pwm duty: {}",
+    //     ((PWM_TOP) as f32 * commanded_speed.abs()) as u16
+    // );
     esc_pwm
-        .set_duty_cycle(((PWM_TOP + 1) as f32 * commanded_speed.abs()) as u16)
-        .unwrap();
+        .set_duty_cycle(((PWM_TOP) as f32 * commanded_speed.abs()) as u16)
+        .expect("Wrong duty cycle somehow");
 }

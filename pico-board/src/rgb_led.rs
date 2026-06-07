@@ -115,11 +115,11 @@ pub async fn led_driver_task(
             Either::First(command) => {
                 match command {
                     Command::Transient(new_transient_anim) => {
-                        defmt::debug!("New transient animation");
+                        // defmt::debug!("New transient animation");
                         transient_anim = Some((new_transient_anim, embassy_time::Instant::now()));
                     }
                     Command::Looping(new_looping_animation) => {
-                        defmt::debug!("New looping animation");
+                        // defmt::debug!("New looping animation");
                         looping_anim = new_looping_animation;
                     }
                 };
