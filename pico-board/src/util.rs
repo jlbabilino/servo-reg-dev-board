@@ -1,3 +1,5 @@
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
 pub fn rem(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> embassy_time::Duration {
     let lhs_ticks = lhs.as_ticks();
     let rhs_ticks = rhs.as_ticks();
@@ -7,14 +9,14 @@ pub fn rem(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> embassy_
     embassy_time::Duration::from_ticks(rem_ticks)
 }
 
-pub fn div_int(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> u64 {
-    let lhs_ticks = lhs.as_ticks();
-    let rhs_ticks = rhs.as_ticks();
+// pub fn div_int(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> u64 {
+//     let lhs_ticks = lhs.as_ticks();
+//     let rhs_ticks = rhs.as_ticks();
 
-    let div_ticks = lhs_ticks / rhs_ticks;
+//     let div_ticks = lhs_ticks / rhs_ticks;
 
-    div_ticks
-}
+//     div_ticks
+// }
 
 pub fn div(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> f32 {
     let lhs_ticks = lhs.as_ticks();
@@ -53,4 +55,24 @@ pub const fn const_checked_mul(
         return None;
     };
     Some(embassy_time::Duration::from_ticks(result))
+}
+
+pub struct BoolSignal {
+    signal: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool>,
+}
+
+impl BoolSignal {
+    pub const fn new() -> Self {
+        BoolSignal {
+            signal: embassy_sync::signal::Signal::<CriticalSectionRawMutex, bool>::new(),
+        }
+    }
+
+    pub async fn wait_for_any_edge(&self) -> bool {
+        self.signal.wait().await
+    }
+
+    pub async fn wait_for_high(&self) {
+        while !self.signal.wait().await {}
+    }
 }

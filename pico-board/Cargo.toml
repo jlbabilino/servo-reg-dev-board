@@ -57,14 +57,16 @@ heapless = "0.9.3"
 # log-to-defmt = "0.1.0"
 log = "0.4.29"
 # w5500 = { version = "0.6.0", features = ["defmt"] }
-w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
+postcard = { version = "1.1.3", features = ["defmt"] }
+
+# rp235x-hal = { version = "0.3", features = [w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
 w5500-hl = { version = "0.12.0" }
 fixed = "1.31.0"
 color = { version = "0.3.3", default-features = false, features = ["libm"] }
 embassy-time-driver = "0.2.2"
 static_assertions = "1.1.0"
-
-# rp235x-hal = { version = "0.3", features = [
+serde = { version = "1.0.228", default-features = false }
+w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
 #     "rt",
 #     "critical-section-impl",
 #     "rom-func-cache",

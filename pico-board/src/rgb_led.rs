@@ -16,8 +16,8 @@ pub enum Command {
 
 /// r, g, b are values from 0 to 1 where 0.0 is fully off and 1.0 is maximum brightness
 pub fn set_rgb<'b>(
-    led_red_a: &mut pwm::Pwm<'b>,
-    led_green_a_blue_b: &mut pwm::Pwm<'b>,
+    led_green_a: &mut pwm::Pwm<'b>,
+    led_red_a_blue_b: &mut pwm::Pwm<'b>,
     rgb: color::OpaqueColor<color::Srgb>,
 ) {
     let color_components = rgb.components;
@@ -33,32 +33,37 @@ pub fn set_rgb<'b>(
     // This is a good frequency for LED dimming since
     // it's fast enough to not look like it's flashing
 
+    const R_SCALE: f32 = 1.0;
+    const G_SCALE: f32 = 0.65;
+    const B_SCALE: f32 = 0.7;
+    const ALL_SCALE: f32 = 0.1;
+
     let r = f32::max(f32::min(r, 1.0), 0.0);
     let g = f32::max(f32::min(g, 1.0), 0.0);
     let b = f32::max(f32::min(b, 1.0), 0.0);
-    let r_duty = (62499.0 * r * r) as u16;
-    let g_duty = (62499.0 * g * g) as u16;
-    let b_duty = (62499.0 * b * b) as u16;
+    let r_duty = (62499.0 * r * r * R_SCALE * ALL_SCALE) as u16;
+    let g_duty = (62499.0 * g * g * G_SCALE * ALL_SCALE) as u16;
+    let b_duty = (62499.0 * b * b * B_SCALE * ALL_SCALE) as u16;
 
-    let mut led_red_a_config = pwm::Config::default();
-    led_red_a_config.invert_a = true;
-    led_red_a_config.phase_correct = false;
-    led_red_a_config.enable = true;
-    led_red_a_config.divider = divider;
-    led_red_a_config.compare_a = r_duty;
-    led_red_a_config.top = DUTY_MAX;
+    let mut led_green_a_config = pwm::Config::default();
+    led_green_a_config.invert_a = false;
+    led_green_a_config.phase_correct = false;
+    led_green_a_config.enable = true;
+    led_green_a_config.divider = divider;
+    led_green_a_config.compare_a = g_duty;
+    led_green_a_config.top = DUTY_MAX;
 
-    let mut led_green_a_blue_b_config = pwm::Config::default();
-    led_green_a_blue_b_config.invert_a = true;
-    led_green_a_blue_b_config.invert_b = true;
-    led_green_a_blue_b_config.phase_correct = false;
-    led_green_a_blue_b_config.enable = true;
-    led_green_a_blue_b_config.divider = divider;
-    led_green_a_blue_b_config.compare_a = g_duty;
-    led_green_a_blue_b_config.compare_b = b_duty;
+    let mut led_red_a_blue_b_config = pwm::Config::default();
+    led_red_a_blue_b_config.invert_a = false;
+    led_red_a_blue_b_config.invert_b = false;
+    led_red_a_blue_b_config.phase_correct = false;
+    led_red_a_blue_b_config.enable = true;
+    led_red_a_blue_b_config.divider = divider;
+    led_red_a_blue_b_config.compare_a = r_duty;
+    led_red_a_blue_b_config.compare_b = b_duty;
 
-    led_red_a.set_config(&led_red_a_config);
-    led_green_a_blue_b.set_config(&led_green_a_blue_b_config);
+    led_green_a.set_config(&led_green_a_config);
+    led_red_a_blue_b.set_config(&led_red_a_blue_b_config);
 }
 
 #[embassy_executor::task]
@@ -68,8 +73,8 @@ pub async fn led_driver_task(
         Command,
         16,
     >,
-    mut led_red_a: pwm::Pwm<'static>,
-    mut led_green_a_blue_b: pwm::Pwm<'static>,
+    mut led_green_a: pwm::Pwm<'static>,
+    mut led_red_a_blue_b: pwm::Pwm<'static>,
 ) {
     let mut led_pwm_update_loop =
         async |curr_anim: &crate::anim::Animation,
@@ -90,7 +95,7 @@ pub async fn led_driver_task(
                 }
                 let t_rel = curr_time - t_anim_start;
                 let color = curr_anim.eval(t_rel);
-                set_rgb(&mut led_red_a, &mut led_green_a_blue_b, color);
+                set_rgb(&mut led_green_a, &mut led_red_a_blue_b, color);
                 led_ticker.next().await;
             }
         };

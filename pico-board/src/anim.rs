@@ -56,7 +56,7 @@ impl Animation {
                 let new_color: color::AlphaColor<color::Hsl> =
                     color::AlphaColor::new([hue, 100., 50., 1.]);
 
-                new_color.convert().discard_alpha() / 2. // the / 2 is just to make it dimmer cuz my eyes hurt
+                new_color.convert().discard_alpha() / 5. // the / 2 is just to make it dimmer cuz my eyes hurt
             }
         }
     }
