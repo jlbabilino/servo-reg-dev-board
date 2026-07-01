@@ -1,7 +1,8 @@
 use embassy_futures::select::Either;
 use embassy_rp::pwm;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use fixed::traits::ToFixed;
+
+use crate::data::LED_COMMAND_CH;
 
 /// LED "tick" rate, which is the rate at which an LED animation is played at in Hz.
 /// This should be fast enough to prevent visual flicker, but slow enough to prevent
@@ -68,11 +69,6 @@ pub fn set_rgb<'b>(
 
 #[embassy_executor::task]
 pub async fn led_driver_task(
-    led_command_signal: &'static embassy_sync::channel::Channel<
-        CriticalSectionRawMutex,
-        Command,
-        16,
-    >,
     mut led_green_a: pwm::Pwm<'static>,
     mut led_red_a_blue_b: pwm::Pwm<'static>,
 ) {
@@ -107,7 +103,7 @@ pub async fn led_driver_task(
     let mut transient_anim: Option<(crate::anim::Animation, embassy_time::Instant)> = None;
     loop {
         match embassy_futures::select::select(
-            led_command_signal.receive(),
+            LED_COMMAND_CH.receive(),
             match transient_anim {
                 // play a transient animation with given start time
                 Some(ref value) => led_pwm_update_loop(&value.0, false, Some(value.1)),

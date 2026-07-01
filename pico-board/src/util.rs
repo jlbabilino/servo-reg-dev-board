@@ -57,6 +57,12 @@ pub const fn const_checked_mul(
     Some(embassy_time::Duration::from_ticks(result))
 }
 
+pub async fn spin_async() -> ! {
+    loop {
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
+    }
+}
+
 pub struct BoolSignal {
     signal: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool>,
 }

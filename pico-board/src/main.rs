@@ -6,48 +6,50 @@
 //    \ \__\     ____\_\  \ \__\          \ \_______\ \__\ \_____  \ \_______\ \__\ \_______\____\_\  \
 //     \|__|    |\_________\|__|           \|_______|\|__|\|___| \__\|_______|\|__|\|_______|\_________\
 //              \|_________|                                    \|__|                       \|_________|
+//
+// Justin Babilino
 
 #![no_std]
 #![no_main]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
 
 mod anim;
 mod buttons;
 mod constants;
+mod data;
 mod motor_control;
 mod motor_quadrature;
 mod network;
 mod rgb_led;
 mod util;
 
-use core::cell::Cell;
-
 use embassy_futures::select::Either;
 use embassy_futures::select::select;
-use embassy_rp::gpio::Level;
 use embassy_rp::peripherals::DMA_CH0;
 use embassy_rp::peripherals::DMA_CH1;
 use embassy_rp::pwm;
-use embassy_rp::pwm::SetDutyCycle;
 use embassy_rp::spi;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel;
 use embassy_sync::signal::Signal;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
-use embassy_time::Instant;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 
 use embassy_rp::adc;
 use embassy_rp::gpio;
-use embassy_sync::blocking_mutex::Mutex;
-
-use fixed::traits::ToFixed;
-use fixed::types::I32F32;
 
 use anim::Rainbow;
-use motor_control::MotorState;
+use motor_control::MotorCommand;
 
-use crate::anim::Animation::Pulse;
+use crate::data::LED_COMMAND_CH;
+use crate::data::MOTOR_COMMAND_CHANNEL;
+use crate::data::MOTOR_CURRENT_POSITION;
+use crate::network::CmdFromPC;
+use crate::network::NetworkStatus;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -61,25 +63,14 @@ defmt::timestamp!("[t = {=u64:us} s]", {
 //     Enabled,
 // }
 
-static MOTOR_CUM_ANGLE_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
-    Mutex::new(Cell::new(I32F32::const_from_int(0)));
-
-static COMMANDED_POS_MUTEX: Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
-    Mutex::new(Cell::new(I32F32::const_from_int(0)));
-
-static MOTOR_STATE_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, MotorState> =
-    Signal::new();
-
-pub static LED_COMMAND_CH: embassy_sync::channel::Channel<
-    CriticalSectionRawMutex,
-    rgb_led::Command,
-    16, // should be processed instantly but just in case
-> = embassy_sync::channel::Channel::new();
-
 static BUTTON_1_WATCH: Watch<CriticalSectionRawMutex, bool, 4> = Watch::new();
 static BUTTON_2_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static BUTTON_3_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool> = Signal::new();
 static BUTTON_4_SIGNAL: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool> = Signal::new();
+
+static NETWORK_STATUS_IND: Watch<CriticalSectionRawMutex, NetworkStatus, 4> = Watch::new();
+static NETWORK_CMD_FROM_PC_CH: channel::Channel<CriticalSectionRawMutex, CmdFromPC, 16> =
+    channel::Channel::new();
 
 embassy_rp::bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
@@ -133,38 +124,30 @@ async fn main(spawner: embassy_executor::Spawner) {
     // A high-frequency loop (~3 kHz) to track the motor's rotation
     // Modifies a mutex to set share the current rotation angle with other tasks
     spawner.spawn(
-        motor_quadrature::motor_quadrature_task(
-            adc,
-            hall_a_pin,
-            hall_b_pin,
-            hall_c_pin,
-            &MOTOR_CUM_ANGLE_MUTEX,
-            &LED_COMMAND_CH,
-        )
-        .unwrap(),
+        motor_quadrature::motor_quadrature_task(adc, hall_a_pin, hall_b_pin, hall_c_pin).unwrap(),
     );
 
     // Accepts MotorState requests to drive the motor to a ceratin speed or
     // position. Can also disable or brake the motor using certain pins.
     spawner.spawn(
-        motor_control::motor_control_task(
-            &MOTOR_STATE_SIGNAL,
-            &MOTOR_CUM_ANGLE_MUTEX,
-            esc_stop_pin,
-            esc_brake_pin,
-            esc_dir_pin,
-            esc_pwm,
-        )
-        .unwrap(),
+        motor_control::motor_control_task(esc_stop_pin, esc_brake_pin, esc_dir_pin, esc_pwm)
+            .unwrap(),
     );
 
     // Plays animations on the RGB LED built into the board. Can send things like
     // "fade in and out blue indefinitely" or "flash red five times"
-    spawner
-        .spawn(rgb_led::led_driver_task(&LED_COMMAND_CH, led_green_a, led_red_a_blue_b).unwrap());
+    spawner.spawn(rgb_led::led_driver_task(led_green_a, led_red_a_blue_b).unwrap());
 
     // Manages network messages, such as motor feedback to DAQ PC
-    spawner.spawn(network::network_task(w5500, w5500_int).unwrap());
+    spawner.spawn(
+        network::network_task(
+            w5500,
+            w5500_int,
+            NETWORK_STATUS_IND.sender(),
+            NETWORK_CMD_FROM_PC_CH.sender(),
+        )
+        .unwrap(),
+    );
 
     // Logging and console printing task
     spawner.spawn(monitor_task().unwrap());
@@ -245,7 +228,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             //     .send(rgb_led::Command::Looping(animation))
             //     .await;
 
-            MOTOR_STATE_SIGNAL.signal(MotorState::Disabled);
+            MOTOR_COMMAND_CHANNEL.send(MotorCommand::Disabled).await;
             if control_state == ControlState::Manual1 {
                 loop {
                     let button_2_val = button_2.is_low();
@@ -253,16 +236,16 @@ async fn main(spawner: embassy_executor::Spawner) {
 
                     match (button_2_val, button_4_val) {
                         (false, false) => {
-                            MOTOR_STATE_SIGNAL.signal(MotorState::Disabled);
+                            MOTOR_COMMAND_CHANNEL.send(MotorCommand::Disabled).await;
                         }
                         (true, false) => {
-                            MOTOR_STATE_SIGNAL.signal(MotorState::Speed(0.01));
+                            MOTOR_COMMAND_CHANNEL.send(MotorCommand::Speed(0.01)).await;
                         }
                         (false, true) => {
-                            MOTOR_STATE_SIGNAL.signal(MotorState::Speed(-0.01));
+                            MOTOR_COMMAND_CHANNEL.send(MotorCommand::Speed(-0.01)).await;
                         }
                         (true, true) => {
-                            MOTOR_STATE_SIGNAL.signal(MotorState::Brake);
+                            MOTOR_COMMAND_CHANNEL.send(MotorCommand::Brake).await;
                         }
                     };
                     Timer::after_millis(10).await;
@@ -320,6 +303,7 @@ async fn main(spawner: embassy_executor::Spawner) {
                             .send(rgb_led::Command::Looping(constants::MANUAL_MODE_1_ANIM))
                             .await;
                     }
+                    (_, _) => {}
                 }
             }
             Either::Second(_) => defmt::unreachable!(),
@@ -349,7 +333,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
 #[embassy_executor::task]
 async fn test_motor_ctrl(
-    motor_state_signal: &'static Signal<CriticalSectionRawMutex, MotorState>,
+    motor_state_signal: &'static Signal<CriticalSectionRawMutex, MotorCommand>,
     mut test_button_a: gpio::Input<'static>,
     mut test_button_b: gpio::Input<'static>,
 ) {
@@ -417,7 +401,7 @@ async fn monitor_task() {
     let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(20));
 
     loop {
-        let cum_theta: f32 = MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get()).to_num();
+        let cum_theta: f32 = MOTOR_CURRENT_POSITION.lock(|cell| cell.get()).to_num();
 
         // defmt::info!("angle = {} deg", cum_theta * (180. / core::f32::consts::PI),);
 

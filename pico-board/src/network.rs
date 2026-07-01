@@ -1,6 +1,3 @@
-use core::cell::Cell;
-use core::cell::RefCell;
-use core::hint::spin_loop;
 use core::net::Ipv4Addr;
 use core::net::SocketAddrV4;
 
@@ -9,20 +6,18 @@ use embassy_futures::select::Either3;
 use embassy_futures::select::select;
 use embassy_futures::select::select3;
 use embassy_rp::gpio;
-use embassy_rp::peripherals::SPI0;
 use embassy_rp::peripherals::SPI1;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_sync::watch::Sender;
+use embassy_sync::watch;
 use embassy_time::Duration;
-use embassy_time::Instant;
 use embassy_time::Ticker;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use fixed::traits::ToFixed;
-use fixed::types::I32F32;
 use serde::Deserialize;
 use serde::Serialize;
 use w5500_hl::Tcp;
@@ -31,16 +26,15 @@ use w5500_ll::Interrupt;
 use w5500_ll::SocketCommand;
 use w5500_ll::SocketInterrupt;
 use w5500_ll::SocketInterruptMask;
-use w5500_ll::SocketMode;
 use w5500_ll::SocketStatus;
 use w5500_ll::eh1::vdm::W5500;
 use w5500_ll::net::Eui48Addr;
-use w5500_ll::{Protocol, Registers, Sn};
+use w5500_ll::{Registers, Sn};
 
-use crate::COMMANDED_POS_MUTEX;
-use crate::LED_COMMAND_CH;
-use crate::MOTOR_CUM_ANGLE_MUTEX;
 use crate::constants::HEARTBEAT_MAX_ALLOWED;
+use crate::data::MOTOR_CURRENT_POSITION;
+use crate::data::MOTOR_POSITION_SETPOINT;
+use crate::data::MOTOR_SPEED_SETPOINT;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -111,7 +105,8 @@ pub enum TelemToPC {
 
 #[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
 pub enum TelemFromPC {
-    MotorAngleSetpoint(f32),
+    MotorPositionSetpoint(f32),
+    MotorSpeedSetpoint(f32),
 }
 
 struct Heartbeat {}
@@ -126,7 +121,8 @@ pub enum NetworkStatus {
 pub async fn network_task(
     mut w5500: ExclusiveW5500,
     mut w5500_int: gpio::Input<'static>,
-    status_ind: Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    status_ind: watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    cmd_channel: channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
 ) {
     // Goal is to make this code have no panic points
     // Must loop until we are able to configure it.
@@ -151,7 +147,7 @@ pub async fn network_task(
 
     // Accept connections, transfer data, disconnect, then repeat
     loop {
-        match handle_connection(&w5500_lock, &mut w5500_int, &status_ind).await {
+        match handle_connection(&w5500_lock, &mut w5500_int, &status_ind, &cmd_channel).await {
             Ok(_) => {
                 // Must have gracefully disconnected
                 defmt::info!("Connection closed");
@@ -166,178 +162,13 @@ pub async fn network_task(
             }
         }
     }
-
-    // let mut last_hearbeat = Instant::now();
-
-    // w5500
-    //     .udp_bind(TELEM_SOCKET, TELEM_PORT)
-    //     .expect("Failed to bind UDP socket");
-
-    // loop {
-    //     let status_res = w5500.sn_sr(CMD_SOCKET).expect("Bus error");
-
-    //     let Ok(status) = status_res else {
-    //         defmt::error!("Status conversion error");
-    //         Timer::after_millis(10).await;
-    //         continue;
-    //     };
-
-    //     match status {
-    //         SocketStatus::Closed | SocketStatus::Init => {
-    //             defmt::info!("Listening for CMD TCP server on port {}...", CMD_PORT);
-    //             w5500.tcp_listen(CMD_SOCKET, CMD_PORT).unwrap();
-    //         }
-    //         SocketStatus::CloseWait
-    //         | SocketStatus::FinWait
-    //         | SocketStatus::LastAck
-    //         | SocketStatus::Closing
-    //         | SocketStatus::TimeWait => {
-    //             defmt::info!("CMD TCP server disconnected by client.");
-    //             // Give it some time to try to gracefully disconnect
-    //             embassy_time::Timer::after_millis(100).await;
-    //             w5500
-    //                 .set_sn_cr(CMD_SOCKET, w5500_ll::SocketCommand::Close)
-    //                 .unwrap();
-    //             continue;
-    //         }
-    //         SocketStatus::Established | SocketStatus::SynRecv | SocketStatus::SynSent => {
-    //             if (Instant::now() - last_hearbeat).as_millis() >= 100 {
-    //                 defmt::error!("Lost connection to client! Restarting");
-    //                 w5500
-    //                     .set_sn_cr(CMD_SOCKET, w5500_ll::SocketCommand::Disconnect)
-    //                     .unwrap();
-    //                 LED_COMMAND_CH.send(DISABLED_ANIM).await;
-    //                 embassy_time::Timer::after_millis(100).await;
-    //             }
-    //             let pc_ip = w5500.sn_dipr(CMD_SOCKET).unwrap();
-    //             let dummy_data = [0xA4];
-    //             w5500.tcp_write(CMD_SOCKET, &dummy_data).unwrap();
-    //             let mut recv_buf: [u8; 4] = [0; 4];
-    //             while let Ok((num_bytes, _)) = w5500.udp_recv_from(TELEM_SOCKET, &mut recv_buf) {
-    //                 // Try to convert input to a float
-    //                 if num_bytes == 4 {
-    //                     let input_value = f32::from_le_bytes(recv_buf);
-    //                     COMMANDED_POS_MUTEX.lock(|cell| cell.set(input_value.to_fixed::<I32F32>()));
-    //                     defmt::info!("UDP recv {}", input_value);
-    //                 } else {
-    //                     defmt::info!("UDP recv {} bytes", &num_bytes);
-    //                 }
-    //             }
-    //             let motor_rot: f32 = MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get()).to_num();
-    //             let packet = motor_rot.to_le_bytes();
-    //             w5500
-    //                 .udp_send_to(TELEM_SOCKET, &packet, &SocketAddrV4::new(pc_ip, TELEM_PORT))
-    //                 .expect("Couldn't send the udp thing");
-    //         }
-    //         SocketStatus::Listen => {}
-    //         SocketStatus::Udp => defmt::unreachable!("UDP not enabled for CMD socket"),
-    //         SocketStatus::Macraw => defmt::unreachable!("MACRAW not enabled for CMD socket"),
-    //     }
-
-    //     embassy_futures::select::select(
-    //         Timer::at(last_hearbeat + Duration::from_millis(100)),
-    //         w5500_int.wait_for_low(),
-    //     )
-    //     .await;
-
-    //     while w5500_int.is_low() {
-    //         let ir = w5500.ir().unwrap();
-    //         if ir.unreach() {
-    //             defmt::info!("Client unreachable!");
-    //             let unreach_clr = Interrupt::DEFAULT.clear_unreach();
-    //             w5500.set_ir(unreach_clr).unwrap();
-    //         }
-
-    //         let cmd_ir = w5500.sn_ir(CMD_SOCKET).unwrap();
-    //         if cmd_ir.con_raised() {
-    //             defmt::info!("CMD TCP Connected!");
-    //             LED_COMMAND_CH.send(ENABLED_ANIM).await;
-    //             last_hearbeat = Instant::now();
-    //             let con_clr = SocketInterrupt::DEFAULT.clear_con();
-    //             w5500.set_sn_ir(CMD_SOCKET, con_clr).unwrap();
-    //         }
-    //         if cmd_ir.discon_raised() {
-    //             defmt::info!("CMD TCP Disconnected!");
-    //             LED_COMMAND_CH.send(DISABLED_ANIM).await;
-    //             let discon_clr = SocketInterrupt::DEFAULT.clear_discon();
-    //             w5500.set_sn_ir(CMD_SOCKET, discon_clr).unwrap();
-    //         }
-    //         if cmd_ir.timeout_raised() {
-    //             defmt::info!("CMD TCP socket timed out!");
-    //             let timeout_clr = SocketInterrupt::DEFAULT.clear_timeout();
-    //             w5500.set_sn_ir(CMD_SOCKET, timeout_clr).unwrap();
-    //         }
-    //         if cmd_ir.recv_raised() {
-    //             let mut buff = [0; 1024];
-    //             let num_bytes = w5500.tcp_read(CMD_SOCKET, &mut buff).unwrap();
-    //             let bytes: &[u8] = &buff[..num_bytes as usize];
-    //             defmt::info!("Received data: {}", bytes);
-    //             const RECV_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_recv();
-    //             w5500.set_sn_ir(CMD_SOCKET, RECV_CLR).unwrap();
-    //         }
-    //         if cmd_ir.sendok_raised() {
-    //             // defmt::info!("TX successful!");
-    //             last_hearbeat = Instant::now();
-    //             const SENDOK_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_sendok();
-    //             w5500.set_sn_ir(CMD_SOCKET, SENDOK_CLR).unwrap();
-    //         }
-
-    //         let telem_ir = w5500.sn_ir(TELEM_SOCKET).unwrap();
-    //         if telem_ir.recv_raised() {
-    //             const RECV_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_recv();
-    //             w5500.set_sn_ir(TELEM_SOCKET, RECV_CLR).unwrap();
-    //         }
-    //         if telem_ir.sendok_raised() {
-    //             const SENDOK_CLR: SocketInterrupt = SocketInterrupt::DEFAULT.clear_sendok();
-    //             w5500.set_sn_ir(TELEM_SOCKET, SENDOK_CLR).unwrap();
-    //         }
-    //         embassy_time::Timer::after_millis(10).await;
-    //     }
-
-    // let mut rx_buffer = [0; 4096];
-
-    // w5500.udp_recv_from(TELEM_SOCKET, &mut rx_buffer).unwrap();
-
-    // 'tcp_loop: loop {
-    //     w5500_int.wait_for_low().await;
-    //     let sn_ir = w5500.sn_ir(CMD_SOCKET).unwrap();
-    //     if sn_ir.discon_raised() {
-    //         defmt::error!("Lost TCP connection! Will attempt to reconnect...");
-    //         w5500
-    //             .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_discon())
-    //             .unwrap();
-    //         break 'conn_loop; // go back to start
-    //     }
-    //     if sn_ir.recv_raised() {
-    //         w5500
-    //             .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
-    //             .unwrap();
-    //         defmt::info!("Received data");
-    //         match w5500.tcp_read(Sn::Sn0, &mut rx_buffer) {
-    //             Ok(0) => {
-    //                 embassy_time::Timer::after(embassy_time::Duration::from_millis(20)).await;
-    //             }
-    //             Ok(_) => {
-    //                 // defmt::info!("Received: {}", bytes_received);
-    //                 let byte_array: [u8; 4] = rx_buffer[..4].try_into().unwrap();
-    //                 let hue_degrees: f32 = f32::from_be_bytes(byte_array);
-
-    //                 defmt::info!("Successfully decoded float: {}", hue_degrees);
-    //             }
-    //             Err(e) => {
-    //                 defmt::error!("Error receiving");
-    //             }
-    //         }
-    //     }
-    //     // embassy_time::Timer::after(embassy_time::Duration::from_millis(20)).await;
-    // }
-    // }
 }
 
 async fn handle_connection(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     mut w5500_int: &mut gpio::Input<'static>,
-    status_ind: &Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    status_ind: &watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
 ) -> Result<(), &'static str> {
     // Make sure W5500 starts in a disconnected state. For example, if pico
     // restarted and the w5500 is still connected to something, we close it
@@ -435,7 +266,7 @@ async fn handle_connection(
     //   3. Transmission loop. This should never end
     match select3(
         pulse_check(&heartbeat_signal),
-        active_con_loop(&w5500_mutex, &mut w5500_int),
+        active_con_loop(&w5500_mutex, &mut w5500_int, &heartbeat_signal, cmd_channel),
         push_telemetry(&w5500_mutex),
     )
     .await
@@ -484,48 +315,60 @@ async fn pulse_check(heartbeat_signal: &Signal<NoopRawMutex, Heartbeat>) {
 async fn active_con_loop(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     w5500_int: &mut gpio::Input<'static>,
+    heartbeat_signal: &Signal<NoopRawMutex, Heartbeat>,
+    cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
 ) -> Result<(), &'static str> {
     loop {
-        let mut w5500 = w5500_mutex.lock().await;
-
         w5500_int.wait_for_low().await;
         // Interrupts we need to handle:
         // 1. IP conflict
         // 2. Destination host unreachable
         // 3. CMD socket disconnected
-        // 4. CMD socket received data
         // 5. CMD socket timed out
+        // 4. CMD socket received data
         // 6. TELEM socket received data
         // 7. TELEM socket timed out
-        let ir = w5500
-            .ir()
-            .map_err(|_| "Failed to get W5500 interrupt register")?;
-        if ir.conflict() {
-            w5500
-                .set_ir(Interrupt::DEFAULT.set_conflict())
-                .map_err(|_| "Failed to set W5500 interrupt register")?;
-            return Err("IP conflict detected");
-        }
-        if ir.unreach() {
-            w5500
-                .set_ir(Interrupt::DEFAULT.clear_unreach())
-                .map_err(|_| "Failed to set W5500 interrupt register")?;
-            return Err("Destination host unreachable");
-        }
+        let cmd_ir = {
+            let mut w5500 = w5500_mutex.lock().await;
+            let ir = w5500
+                .ir()
+                .map_err(|_| "Failed to get W5500 interrupt register")?;
+            if ir.conflict() {
+                w5500
+                    .set_ir(Interrupt::DEFAULT.set_conflict())
+                    .map_err(|_| "Failed to set W5500 interrupt register")?;
+                return Err("IP conflict detected");
+            }
+            if ir.unreach() {
+                w5500
+                    .set_ir(Interrupt::DEFAULT.clear_unreach())
+                    .map_err(|_| "Failed to set W5500 interrupt register")?;
+                return Err("Destination host unreachable");
+            }
 
-        let cmd_ir = w5500
-            .sn_ir(CMD_SOCKET)
-            .map_err(|_| "Failed to get CMD socket interrupt register")?;
-        if cmd_ir.discon_raised() {
-            w5500
-                .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_discon())
-                .map_err(|_| "Failed to clear CMD socket disconnect interrupt")?;
-            return Ok(());
-        }
+            let cmd_ir = w5500
+                .sn_ir(CMD_SOCKET)
+                .map_err(|_| "Failed to get CMD socket interrupt register")?;
+            if cmd_ir.discon_raised() {
+                w5500
+                    .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_discon())
+                    .map_err(|_| "Failed to clear CMD socket disconnect interrupt")?;
+                return Ok(());
+            }
+            if cmd_ir.timeout_raised() {
+                // defmt::info!("CMD TCP socket timed out!");
+                w5500
+                    .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_timeout())
+                    .map_err(|_| "Failed to clear CMD socket timeout interrupt")?;
+                return Err("CMD socket timed out");
+            }
+            cmd_ir
+        };
         if cmd_ir.recv_raised() {
+            let mut w5500 = w5500_mutex.lock().await;
             w5500
                 .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
-                .map_err(|_| "Failed to clear CMD socket recv interrupt");
+                .map_err(|_| "Failed to clear CMD socket recv interrupt")?;
             let mut buff = [0; 64];
             const PACKET_SIZE: usize = size_of::<CmdFromPC>();
             let num_bytes_read = w5500
@@ -538,22 +381,47 @@ async fn active_con_loop(
 
             let cmd_from_pc = postcard::from_bytes::<CmdFromPC>(bytes_slice)
                 .map_err(|_| "Failed to deserialize CMD packet from PC")?;
-        }
-        if cmd_ir.timeout_raised() {
-            defmt::info!("CMD TCP socket timed out!");
-            let timeout_clr = SocketInterrupt::DEFAULT.clear_timeout();
-            w5500.set_sn_ir(CMD_SOCKET, timeout_clr).unwrap();
+            heartbeat_signal.signal(Heartbeat {});
+            drop(w5500); // yield w5500 back before await point
+            cmd_channel.send(cmd_from_pc).await;
         }
 
-        let telem_ir = w5500
-            .sn_ir(TELEM_SOCKET)
-            .map_err(|_| "Failed to get TELEM socket interrupt")?;
+        {
+            let mut w5500 = w5500_mutex.lock().await;
+            let telem_ir = w5500
+                .sn_ir(TELEM_SOCKET)
+                .map_err(|_| "Failed to get TELEM socket interrupt")?;
 
-        if telem_ir.recv_raised() {
-            todo!(); // TODO: help me
-        }
-        if telem_ir.timeout_raised() {
-            todo!();
+            if telem_ir.timeout_raised() {
+                w5500
+                    .set_sn_ir(TELEM_SOCKET, SocketInterrupt::DEFAULT.clear_timeout())
+                    .map_err(|_| "Failed to clear TELEM socket timeout interrupt")?;
+                return Err("TELEM socket timed out");
+            }
+            if telem_ir.recv_raised() {
+                w5500
+                    .set_sn_ir(TELEM_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
+                    .map_err(|_| "Failed to clear TELEM socket recv interrupt")?;
+                let mut buf = [0; 64];
+                const PACKET_SIZE: usize = size_of::<TelemFromPC>();
+                let (num_bytes_read, _) = w5500
+                    .udp_recv_from(TELEM_SOCKET, &mut buf)
+                    .map_err(|_| "Failed to receive UDP data on TELEM socket")?;
+                let bytes_slice: &[u8] = &buf[..num_bytes_read as usize];
+                if num_bytes_read as usize != PACKET_SIZE {
+                    return Err("Received packet of incorrect size on TELEM socket");
+                }
+                let telem_from_pc = postcard::from_bytes::<TelemFromPC>(bytes_slice)
+                    .map_err(|_| "Failed to deserialize data received on TELEM socket")?;
+                match telem_from_pc {
+                    TelemFromPC::MotorPositionSetpoint(value) => {
+                        MOTOR_POSITION_SETPOINT.lock(|cell| cell.set(value.to_fixed()));
+                    }
+                    TelemFromPC::MotorSpeedSetpoint(value) => {
+                        MOTOR_SPEED_SETPOINT.lock(|cell| cell.set(value));
+                    }
+                }
+            }
         }
     }
 }
@@ -565,10 +433,12 @@ async fn push_telemetry(
     loop {
         {
             let mut w5500 = w5500_mutex.lock().await;
-            let x = TelemToPC::MotorAngle(MOTOR_CUM_ANGLE_MUTEX.lock(|cell| cell.get().to_num()));
+            let motor_angle_packet =
+                TelemToPC::MotorAngle(MOTOR_CURRENT_POSITION.lock(|cell| cell.get().to_num()));
             const PACKET_SIZE: usize = size_of::<TelemToPC>();
             let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
-            postcard::to_slice(&x, &mut buf);
+            postcard::to_slice(&motor_angle_packet, &mut buf)
+                .map_err(|_| "Failed to serialize TelemToPC into a byte buffer")?;
 
             let num_bytes = w5500
                 .udp_send_to(TELEM_SOCKET, &buf, &SocketAddrV4::new(PC_ADDR, TELEM_PORT))

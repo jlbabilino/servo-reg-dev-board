@@ -1,11 +1,11 @@
-use core::cell::Cell;
 use core::f32::consts;
 use embassy_rp::adc;
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use fixed::traits::ToFixed;
 use fixed::types::I32F32;
+
+use crate::data::{MOTOR_CURRENT_POSITION, QUADRATURE_ERROR_SIGNAL};
+
+pub struct QuadratureError {}
 
 #[embassy_executor::task]
 pub async fn motor_quadrature_task(
@@ -13,8 +13,6 @@ pub async fn motor_quadrature_task(
     mut hall_a_pin: adc::Channel<'static>,
     mut hall_b_pin: adc::Channel<'static>,
     mut hall_c_pin: adc::Channel<'static>,
-    motor_cum_angle_mutex: &'static Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    led_command_ch: &'static Channel<CriticalSectionRawMutex, crate::rgb_led::Command, 16>,
 ) {
     let mut tracker = HallAngleTracker::new();
 
@@ -25,33 +23,29 @@ pub async fn motor_quadrature_task(
     let mut iter_idx: u32 = 0;
 
     loop {
-        use crate::constants::{HA_AMP, HA_AVG, HB_AMP, HB_AVG, HC_AMP, HC_AVG};
+        let quadrature_result = try_update_angle(
+            &mut tracker,
+            &mut adc,
+            &mut hall_a_pin,
+            &mut hall_b_pin,
+            &mut hall_c_pin,
+        );
 
-        let ha_raw = adc.blocking_read(&mut hall_a_pin).unwrap();
-        let hb_raw = adc.blocking_read(&mut hall_b_pin).unwrap();
-        let hc_raw = adc.blocking_read(&mut hall_c_pin).unwrap();
-
-        let ha_norm: f32 = (ha_raw as f32 - HA_AVG as f32) as f32 / HA_AMP as f32;
-        let hb_norm: f32 = (hb_raw as f32 - HB_AVG as f32) as f32 / HB_AMP as f32;
-        let hc_norm: f32 = (hc_raw as f32 - HC_AVG as f32) as f32 / HC_AMP as f32;
-
-        let new_angle = tracker.update(ha_norm, hb_norm, hc_norm).unwrap();
-
-        motor_cum_angle_mutex.lock(|cell| cell.set(new_angle));
+        match quadrature_result {
+            Ok(new_angle) => {
+                MOTOR_CURRENT_POSITION.lock(|cell| cell.set(new_angle));
+            }
+            Err(msg) => {
+                defmt::error!("Quadrature error: {}", msg);
+                QUADRATURE_ERROR_SIGNAL.signal(QuadratureError {});
+                tracker = HallAngleTracker::new(); // reset tracking
+            }
+        }
 
         let finish_time = embassy_time::Instant::now();
 
         let deadline_time =
             ticker_initial_time + ticker_duration.checked_mul(iter_idx + 1).unwrap();
-
-        let fail_anim = crate::anim::Pulse::new(
-            color::palette::css::PURPLE.discard_alpha(),
-            embassy_time::Duration::from_millis(0),
-            embassy_time::Duration::from_millis(200),
-            embassy_time::Duration::from_millis(400),
-            embassy_time::Duration::from_millis(500),
-            2,
-        );
 
         let spare_time = if finish_time < deadline_time {
             (deadline_time - finish_time).as_micros() as i32 // On time
@@ -61,18 +55,42 @@ pub async fn motor_quadrature_task(
 
         if spare_time < 0 {
             // Late
-            led_command_ch
-                .send(crate::rgb_led::Command::Transient(
-                    crate::anim::Animation::Pulse(fail_anim),
-                ))
-                .await;
-            defmt::error!("Motor update loop late by {}", &spare_time);
+            // TODO: make this only be every 1 second
+            defmt::warn!("Motor update loop late by {}", &spare_time);
         }
 
         ticker.next().await;
 
         iter_idx += 1;
     }
+}
+
+fn try_update_angle(
+    tracker: &mut HallAngleTracker,
+    adc: &mut adc::Adc<'static, adc::Blocking>,
+    hall_a_pin: &mut adc::Channel<'static>,
+    hall_b_pin: &mut adc::Channel<'static>,
+    hall_c_pin: &mut adc::Channel<'static>,
+) -> Result<I32F32, &'static str> {
+    use crate::constants::{HA_AMP, HA_AVG, HB_AMP, HB_AVG, HC_AMP, HC_AVG};
+
+    let ha_raw = adc
+        .blocking_read(hall_a_pin)
+        .map_err(|_| "Failed to read hall sensor channel a")?;
+    let hb_raw = adc
+        .blocking_read(hall_b_pin)
+        .map_err(|_| "Failed to read hall sensor channel b")?;
+    let hc_raw = adc
+        .blocking_read(hall_c_pin)
+        .map_err(|_| "Failed to read hall sensor channel c")?;
+
+    let ha_norm: f32 = (ha_raw as f32 - HA_AVG as f32) as f32 / HA_AMP as f32;
+    let hb_norm: f32 = (hb_raw as f32 - HB_AVG as f32) as f32 / HB_AMP as f32;
+    let hc_norm: f32 = (hc_raw as f32 - HC_AVG as f32) as f32 / HC_AMP as f32;
+
+    let new_angle = tracker.update(ha_norm, hb_norm, hc_norm)?;
+
+    Ok(new_angle)
 }
 
 fn wrapped_angle_sub(lhs: f32, rhs: f32) -> f32 {
@@ -161,17 +179,17 @@ impl HallAngleTracker {
         Ok(new_cum_angle + self.offset)
     }
 
-    pub fn reset(&mut self, init_angle: I32F32) {
-        let Some(prev_wrapped_angle) = self.prev_wrapped_angle else {
-            return;
-        };
-        let tau_fixed: I32F32 = consts::TAU.to_fixed::<I32F32>();
-        let cum_angle = (self.cum_rotations.to_fixed::<I32F32>() * tau_fixed)
-            + prev_wrapped_angle.to_fixed::<I32F32>();
-        self.offset = init_angle - cum_angle;
-    }
+    // pub fn reset(&mut self, init_angle: I32F32) {
+    //     let Some(prev_wrapped_angle) = self.prev_wrapped_angle else {
+    //         return;
+    //     };
+    //     let tau_fixed: I32F32 = consts::TAU.to_fixed::<I32F32>();
+    //     let cum_angle = (self.cum_rotations.to_fixed::<I32F32>() * tau_fixed)
+    //         + prev_wrapped_angle.to_fixed::<I32F32>();
+    //     self.offset = init_angle - cum_angle;
+    // }
 
-    pub fn zero(&mut self) {
-        self.reset(0.to_fixed());
-    }
+    // pub fn zero(&mut self) {
+    //     self.reset(0.to_fixed());
+    // }
 }
