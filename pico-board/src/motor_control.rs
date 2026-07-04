@@ -6,18 +6,12 @@ use embassy_rp::{
     pwm::{self, SetDutyCycle},
 };
 use embassy_sync::{
-    blocking_mutex::{self, Mutex, raw::CriticalSectionRawMutex},
-    signal::Signal,
+    blocking_mutex::{self, raw::CriticalSectionRawMutex},
+    channel,
 };
 use fixed::types::I32F32;
 
-use crate::{
-    data::{
-        MOTOR_COMMAND_CHANNEL, MOTOR_CURRENT_POSITION, MOTOR_POSITION_SETPOINT,
-        MOTOR_SPEED_SETPOINT,
-    },
-    util::spin_async,
-};
+use crate::util::spin_async;
 
 static MOTOR_POSITION_OFFSET: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
     blocking_mutex::Mutex::new(Cell::new(I32F32::ZERO));
@@ -29,7 +23,6 @@ pub enum MotorCommand {
     Speed(f32), // 0 = stopped, +1 = max CCW, -1 = max CW
     SpeedRaw,
     Brake,
-    Zero,
 }
 
 const PWM_TOP: u16 = 12499;
@@ -43,24 +36,16 @@ pub fn pwm_config() -> pwm::Config {
     esc_pwm_config
 }
 
-pub fn get_motor_current_position() -> I32F32 {
-    let offset = MOTOR_POSITION_OFFSET.lock(|cell| cell.get());
-    let raw_pos = MOTOR_CURRENT_POSITION.lock(|cell| cell.get());
-    raw_pos + offset
-}
-
-fn motor_reset_position_at(new_pos: I32F32) {
-    let raw_pos = MOTOR_CURRENT_POSITION.lock(|cell| cell.get());
-    let new_offset = new_pos - raw_pos;
-    MOTOR_POSITION_OFFSET.lock(|cell| cell.set(new_offset));
-}
-
 #[embassy_executor::task]
 pub async fn motor_control_task(
     mut esc_stop_pin: gpio::OutputOpenDrain<'static>,
     mut esc_brake_pin: gpio::OutputOpenDrain<'static>,
     mut esc_dir_pin: gpio::OutputOpenDrain<'static>,
     mut esc_pwm: pwm::Pwm<'static>,
+    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
+    motor_command_receiver: channel::Receiver<'static, CriticalSectionRawMutex, MotorCommand, 16>,
 ) {
     let mut motor_controller = async |state: &MotorCommand| -> Result<(), &'static str> {
         match state {
@@ -87,7 +72,7 @@ pub async fn motor_control_task(
                 let speed = speed.clamp(-1., 1.);
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_high();
-                set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed);
+                set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed)?;
                 spin_async().await;
             }
             MotorCommand::SpeedRaw => {
@@ -95,9 +80,9 @@ pub async fn motor_control_task(
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_high();
                 loop {
-                    let speed = MOTOR_SPEED_SETPOINT.lock(|cell| cell.get());
+                    let speed = motor_speed_setpoint.lock(|cell| cell.get());
                     let speed = speed.clamp(-1., 1.);
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed);
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed)?;
                     ticker.next().await;
                 }
             }
@@ -110,11 +95,11 @@ pub async fn motor_control_task(
                 let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(200));
 
                 loop {
-                    let curr_angle = MOTOR_CURRENT_POSITION.lock(|cell| cell.get());
+                    let curr_angle = motor_current_position.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
                     let commanded_speed = (kp * err).clamp(-0.1, 0.1);
                     // defmt::info!("Commanded speed: {}", &commanded_speed);
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed);
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed)?;
 
                     ticker.next().await;
                 }
@@ -128,19 +113,15 @@ pub async fn motor_control_task(
                 let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(200));
 
                 loop {
-                    let curr_angle = MOTOR_CURRENT_POSITION.lock(|cell| cell.get());
-                    let target_angle = MOTOR_POSITION_SETPOINT.lock(|cell| cell.get());
+                    let curr_angle = motor_current_position.lock(|cell| cell.get());
+                    let target_angle = motor_position_setpoint.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
                     let commanded_speed = (kp * err).clamp(-0.1, 0.1);
                     // defmt::info!("Commanded speed: {}", &commanded_speed);
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed);
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed)?;
 
                     ticker.next().await;
                 }
-            }
-            MotorCommand::Zero => {
-                motor_reset_position_at(I32F32::ZERO);
-                spin_async().await;
             }
         };
     };
@@ -148,13 +129,19 @@ pub async fn motor_control_task(
     let mut motor_state = MotorCommand::Disabled;
     loop {
         match embassy_futures::select::select(
-            MOTOR_COMMAND_CHANNEL.receive(),
+            motor_command_receiver.receive(),
             motor_controller(&motor_state),
         )
         .await
         {
             Either::First(new_state) => motor_state = new_state,
-            Either::Second(_) => unreachable!(),
+            Either::Second(Ok(_)) => {
+                // Should not be possible
+                defmt::error!("Motor controller loop should NOT finish!");
+            }
+            Either::Second(Err(msg)) => {
+                defmt::error!("Motor controller loop failed: {}", msg);
+            }
         }
     }
 }

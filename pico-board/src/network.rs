@@ -1,12 +1,14 @@
 use core::net::Ipv4Addr;
 use core::net::SocketAddrV4;
 
+use core::cell::Cell;
 use embassy_futures::select::Either;
 use embassy_futures::select::Either3;
 use embassy_futures::select::select;
 use embassy_futures::select::select3;
 use embassy_rp::gpio;
 use embassy_rp::peripherals::SPI1;
+use embassy_sync::blocking_mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel;
@@ -18,6 +20,7 @@ use embassy_time::Ticker;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use fixed::traits::ToFixed;
+use fixed::types::I32F32;
 use serde::Deserialize;
 use serde::Serialize;
 use w5500_hl::Tcp;
@@ -32,9 +35,6 @@ use w5500_ll::net::Eui48Addr;
 use w5500_ll::{Registers, Sn};
 
 use crate::constants::HEARTBEAT_MAX_ALLOWED;
-use crate::data::MOTOR_CURRENT_POSITION;
-use crate::data::MOTOR_POSITION_SETPOINT;
-use crate::data::MOTOR_SPEED_SETPOINT;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -100,7 +100,7 @@ pub enum CmdFromPC {
 
 #[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
 pub enum TelemToPC {
-    MotorAngle(f32),
+    MotorPosition(f32),
 }
 
 #[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
@@ -123,6 +123,9 @@ pub async fn network_task(
     mut w5500_int: gpio::Input<'static>,
     status_ind: watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
     cmd_channel: channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
+    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
 ) {
     // Goal is to make this code have no panic points
     // Must loop until we are able to configure it.
@@ -147,7 +150,17 @@ pub async fn network_task(
 
     // Accept connections, transfer data, disconnect, then repeat
     loop {
-        match handle_connection(&w5500_lock, &mut w5500_int, &status_ind, &cmd_channel).await {
+        match handle_connection(
+            &w5500_lock,
+            &mut w5500_int,
+            &status_ind,
+            &cmd_channel,
+            motor_current_position,
+            motor_position_setpoint,
+            motor_speed_setpoint,
+        )
+        .await
+        {
             Ok(_) => {
                 // Must have gracefully disconnected
                 defmt::info!("Connection closed");
@@ -166,9 +179,12 @@ pub async fn network_task(
 
 async fn handle_connection(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
-    mut w5500_int: &mut gpio::Input<'static>,
+    w5500_int: &mut gpio::Input<'static>,
     status_ind: &watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
     cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
+    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
 ) -> Result<(), &'static str> {
     // Make sure W5500 starts in a disconnected state. For example, if pico
     // restarted and the w5500 is still connected to something, we close it
@@ -194,7 +210,7 @@ async fn handle_connection(
         // Set only the interrupts we care about for waiting for a connection
 
         let mut w5500 = w5500_mutex.lock().await;
-        configure_interrupts_pre_con(&mut w5500);
+        configure_interrupts_pre_con(&mut w5500)?;
     }
 
     // Wait for interrupt pin to go low
@@ -245,14 +261,16 @@ async fn handle_connection(
         // Now we know CMD connection must have been raised, so clear it
 
         let con_clr = SocketInterrupt::DEFAULT.clear_con();
-        w5500.set_sn_ir(CMD_SOCKET, con_clr).unwrap();
+        w5500
+            .set_sn_ir(CMD_SOCKET, con_clr)
+            .map_err(|_| "Failed to clear CMD con interrupt")?;
 
         // Now we know W5500 is connected to client, so signal that
         defmt::info!("CMD TCP Connected!");
         status_ind.send(NetworkStatus::Connected);
 
         // Configure interrupts to listen for disconnects and data
-        configure_interrupts_active_con(&mut w5500);
+        configure_interrupts_active_con(&mut w5500)?;
     }
 
     // Set up a mutex since we need to have access to the W5500 in the RX and
@@ -266,8 +284,15 @@ async fn handle_connection(
     //   3. Transmission loop. This should never end
     match select3(
         pulse_check(&heartbeat_signal),
-        active_con_loop(&w5500_mutex, &mut w5500_int, &heartbeat_signal, cmd_channel),
-        push_telemetry(&w5500_mutex),
+        active_con_loop(
+            w5500_mutex,
+            w5500_int,
+            &heartbeat_signal,
+            cmd_channel,
+            motor_position_setpoint,
+            motor_speed_setpoint,
+        ),
+        push_telemetry(w5500_mutex, motor_current_position),
     )
     .await
     {
@@ -317,6 +342,8 @@ async fn active_con_loop(
     w5500_int: &mut gpio::Input<'static>,
     heartbeat_signal: &Signal<NoopRawMutex, Heartbeat>,
     cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
+    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
 ) -> Result<(), &'static str> {
     loop {
         w5500_int.wait_for_low().await;
@@ -415,10 +442,10 @@ async fn active_con_loop(
                     .map_err(|_| "Failed to deserialize data received on TELEM socket")?;
                 match telem_from_pc {
                     TelemFromPC::MotorPositionSetpoint(value) => {
-                        MOTOR_POSITION_SETPOINT.lock(|cell| cell.set(value.to_fixed()));
+                        motor_position_setpoint.lock(|cell| cell.set(value.to_fixed()));
                     }
                     TelemFromPC::MotorSpeedSetpoint(value) => {
-                        MOTOR_SPEED_SETPOINT.lock(|cell| cell.set(value));
+                        motor_speed_setpoint.lock(|cell| cell.set(value));
                     }
                 }
             }
@@ -428,13 +455,14 @@ async fn active_con_loop(
 
 async fn push_telemetry(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
+    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
 ) -> Result<(), &'static str> {
     let mut ticker = Ticker::every(Duration::from_hz(500));
     loop {
         {
             let mut w5500 = w5500_mutex.lock().await;
             let motor_angle_packet =
-                TelemToPC::MotorAngle(MOTOR_CURRENT_POSITION.lock(|cell| cell.get().to_num()));
+                TelemToPC::MotorPosition(motor_current_position.lock(|cell| cell.get().to_num()));
             const PACKET_SIZE: usize = size_of::<TelemToPC>();
             let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
             postcard::to_slice(&motor_angle_packet, &mut buf)

@@ -22,9 +22,7 @@ pub fn div(lhs: embassy_time::Duration, rhs: embassy_time::Duration) -> f32 {
     let lhs_ticks = lhs.as_ticks();
     let rhs_ticks = rhs.as_ticks();
 
-    let div_ticks = (lhs_ticks as f32) / (rhs_ticks as f32);
-
-    div_ticks
+    (lhs_ticks as f32) / (rhs_ticks as f32)
 }
 
 pub const fn const_checked_sub(
