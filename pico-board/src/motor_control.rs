@@ -8,14 +8,19 @@ use embassy_rp::{
 use embassy_sync::{
     blocking_mutex::{self, raw::CriticalSectionRawMutex},
     channel,
+    pubsub::WaitResult,
 };
 use fixed::types::I32F32;
 
-use crate::util::spin_async;
+use crate::{
+    types::{F32Mutex, I32F32Mutex, MotorCommandSubscriber},
+    util::spin_async,
+};
 
 static MOTOR_POSITION_OFFSET: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
     blocking_mutex::Mutex::new(Cell::new(I32F32::ZERO));
 
+#[derive(Copy, Clone, defmt::Format)]
 pub enum MotorCommand {
     Disabled,
     Position(I32F32),
@@ -42,10 +47,10 @@ pub async fn motor_control_task(
     mut esc_brake_pin: gpio::OutputOpenDrain<'static>,
     mut esc_dir_pin: gpio::OutputOpenDrain<'static>,
     mut esc_pwm: pwm::Pwm<'static>,
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
-    motor_command_receiver: channel::Receiver<'static, CriticalSectionRawMutex, MotorCommand, 16>,
+    motor_current_position: &'static I32F32Mutex,
+    motor_position_setpoint: &'static I32F32Mutex,
+    motor_speed_setpoint: &'static F32Mutex,
+    mut motor_command_subscriber: MotorCommandSubscriber,
 ) {
     let mut motor_controller = async |state: &MotorCommand| -> Result<(), &'static str> {
         match state {
@@ -129,12 +134,15 @@ pub async fn motor_control_task(
     let mut motor_state = MotorCommand::Disabled;
     loop {
         match embassy_futures::select::select(
-            motor_command_receiver.receive(),
+            motor_command_subscriber.next_message(),
             motor_controller(&motor_state),
         )
         .await
         {
-            Either::First(new_state) => motor_state = new_state,
+            Either::First(WaitResult::Message(new_state)) => motor_state = new_state,
+            Either::First(WaitResult::Lagged(num_msg)) => {
+                defmt::error!("Motor command pubsub lagged! Missed {} messages", num_msg);
+            }
             Either::Second(Ok(_)) => {
                 // Should not be possible
                 defmt::error!("Motor controller loop should NOT finish!");

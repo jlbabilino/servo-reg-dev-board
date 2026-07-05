@@ -18,10 +18,12 @@
 mod anim;
 mod buttons;
 mod constants;
+mod monitor;
 mod motor_control;
 mod motor_quadrature;
 mod network;
 mod rgb_led;
+mod types;
 mod util;
 
 use core::cell::Cell;
@@ -31,8 +33,7 @@ use embassy_rp::peripherals::DMA_CH1;
 use embassy_rp::pwm;
 use embassy_rp::spi;
 use embassy_sync::blocking_mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel;
+use embassy_sync::pubsub::PubSubChannel;
 use embassy_sync::watch::Watch;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use fixed::types::I32F32;
@@ -41,23 +42,20 @@ use w5500_ll::eh1::vdm::W5500;
 use embassy_rp::adc;
 use embassy_rp::gpio;
 
-use crate::motor_control::MotorCommand;
-use crate::motor_quadrature::QuadratureCommand;
-use crate::motor_quadrature::QuadratureError;
-use crate::network::CmdFromPC;
-use crate::network::NetworkStatus;
+use crate::types::CMDFromPCPubSub;
+use crate::types::F32Mutex;
+use crate::types::I32F32Mutex;
+use crate::types::LEDCommandPubSub;
+use crate::types::MotorCommandPubSub;
+use crate::types::NetworkStatusWatch;
+use crate::types::QuadratureCommandWatch;
+use crate::types::QuadratureErrorWatch;
 
 use {defmt_rtt as _, panic_probe as _};
 
 defmt::timestamp!("[t = {=u64:us} s]", {
     embassy_time::Instant::now().as_micros()
 });
-
-// enum OverallState {
-//     Disconnected,
-//     Disabled,
-//     Enabled,
-// }
 
 embassy_rp::bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
@@ -67,7 +65,10 @@ embassy_rp::bind_interrupts!(struct Irqs {
 async fn main(spawner: embassy_executor::Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    // ======================== MAP PICO GPIO PINS ===========================
+    // ========================================================================
+    // ======================== MAP PICO GPIO PINS ============================
+    // ========================================================================
+
     let led_green_a = pwm::Pwm::new_output_a(p.PWM_SLICE1, p.PIN_18, Default::default());
     let led_red_a_blue_b =
         pwm::Pwm::new_output_ab(p.PWM_SLICE0, p.PIN_16, p.PIN_17, Default::default());
@@ -101,47 +102,65 @@ async fn main(spawner: embassy_executor::Spawner) {
     let w5500_int = gpio::Input::new(p.PIN_14, gpio::Pull::Up);
     let w5500 = W5500::new(ExclusiveDevice::new(eth_spi, cs, embassy_time::Delay).unwrap());
 
+    // ========================================================================
     // ======================= COMMUNICATION CHANNELS =========================
+    // ========================================================================
 
-    static NETWORK_STATUS_IND: Watch<CriticalSectionRawMutex, NetworkStatus, 4> = Watch::new();
-    static NETWORK_CMD_FROM_PC_CH: channel::Channel<CriticalSectionRawMutex, CmdFromPC, 16> =
-        channel::Channel::new();
+    static NETWORK_STATUS_WATCH: NetworkStatusWatch = Watch::new();
+    static CMD_FROM_PC_PUBSUB: CMDFromPCPubSub = PubSubChannel::new();
 
     /// Indicates current position of the motor as measured by the hall effect
     /// sensor. Updated by motor_quadrature
-    static MOTOR_CURRENT_POSITION: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
+    static MOTOR_CURRENT_POSITION: I32F32Mutex =
         blocking_mutex::Mutex::new(Cell::new(I32F32::ZERO));
 
-    static QUADRATURE_ERROR_WATCH: Watch<CriticalSectionRawMutex, QuadratureError, 4> =
-        Watch::new();
-
-    static QUADRATURE_COMMAND_WATCH: Watch<CriticalSectionRawMutex, QuadratureCommand, 4> =
-        Watch::new();
+    static QUADRATURE_ERROR_WATCH: QuadratureErrorWatch = Watch::new();
+    static QUADRATURE_COMMAND_WATCH: QuadratureCommandWatch = Watch::new();
 
     /// Used to send commands to the motor control loop. Commands are awaited in motor_control.
     /// For example, you may command the motor to go to position of 100 radians, wait for it
     /// to get there, then zero the position, then command it to go to position 0 radians.
-    static MOTOR_COMMAND_CHANNEL: channel::Channel<CriticalSectionRawMutex, MotorCommand, 16> =
-        channel::Channel::new();
+    static MOTOR_COMMAND_PUBSUB: MotorCommandPubSub = PubSubChannel::new();
 
-    static MOTOR_POSITION_SETPOINT: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
+    static MOTOR_POSITION_SETPOINT: I32F32Mutex =
         blocking_mutex::Mutex::new(Cell::new(I32F32::ZERO));
 
-    static MOTOR_SPEED_SETPOINT: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>> =
-        blocking_mutex::Mutex::new(Cell::new(0.));
+    static MOTOR_SPEED_SETPOINT: F32Mutex = blocking_mutex::Mutex::new(Cell::new(0.));
 
-    pub static LED_COMMAND_CH: channel::Channel<
-        CriticalSectionRawMutex,
-        rgb_led::Command,
-        16, // should be processed instantly but just in case
-    > = channel::Channel::new();
+    pub static LED_COMMAND_PUBSUB: LEDCommandPubSub = PubSubChannel::new();
+
+    // ========================================================================
+    // ========================== RECEIVERS/SENDERS ===========================
+    // ========================================================================
 
     let Some(quadrature_command_receiver) = QUADRATURE_COMMAND_WATCH.receiver() else {
         defmt::error!("Failed to create quadrature command receiver!");
         return;
     };
 
+    let Some(network_status_receiver_monitor) = NETWORK_STATUS_WATCH.receiver() else {
+        defmt::error!("Failed to create network status indictor receiver for monitor task!");
+        return;
+    };
+
+    let Ok(motor_command_subscriber) = MOTOR_COMMAND_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create motor command subscriber!");
+        return;
+    };
+
+    let Ok(led_command_subscriber) = LED_COMMAND_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create LED command subscriber!");
+        return;
+    };
+
+    let Ok(cmd_from_pc_publisher) = CMD_FROM_PC_PUBSUB.publisher() else {
+        defmt::error!("Failed to create Network CMD from PC publisher!");
+        return;
+    };
+
+    // ========================================================================
     // ============================= SPAWN TASKS ==============================
+    // ========================================================================
 
     // A high-frequency loop (~3 kHz) to track the motor's rotation
     // Modifies a mutex to set share the current rotation angle with other tasks
@@ -168,7 +187,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         &MOTOR_CURRENT_POSITION,
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
-        MOTOR_COMMAND_CHANNEL.receiver(),
+        motor_command_subscriber,
     ) else {
         defmt::error!("Failed to spawn motor control task!");
         return;
@@ -177,7 +196,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     // Plays animations on the RGB LED built into the board. Can send things like
     // "fade in and out blue indefinitely" or "flash red five times"
     let Ok(led_driver_task_token) =
-        rgb_led::led_driver_task(led_green_a, led_red_a_blue_b, LED_COMMAND_CH.receiver())
+        rgb_led::led_driver_task(led_green_a, led_red_a_blue_b, led_command_subscriber)
     else {
         defmt::error!("Failed to spawn rgb led driver task!");
         return;
@@ -187,8 +206,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     let Ok(network_task_token) = network::network_task(
         w5500,
         w5500_int,
-        NETWORK_STATUS_IND.sender(),
-        NETWORK_CMD_FROM_PC_CH.sender(),
+        NETWORK_STATUS_WATCH.sender(),
+        cmd_from_pc_publisher,
         &MOTOR_CURRENT_POSITION,
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
@@ -198,7 +217,9 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
 
     // Logging and console printing task
-    let Ok(monitor_task_token) = monitor_task(&MOTOR_CURRENT_POSITION) else {
+    let Ok(monitor_task_token) =
+        monitor::monitor_task(network_status_receiver_monitor, &MOTOR_CURRENT_POSITION)
+    else {
         defmt::error!("Failed to spawn monitor task!");
         return;
     };
@@ -209,21 +230,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(led_driver_task_token);
     spawner.spawn(network_task_token);
     spawner.spawn(monitor_task_token);
-}
-
-#[embassy_executor::task]
-async fn monitor_task(
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-) {
-    let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(1));
-
-    loop {
-        let cum_theta: f32 = motor_current_position.lock(|cell| cell.get()).to_num();
-
-        defmt::info!("angle = {} deg", cum_theta * (180. / core::f32::consts::PI),);
-
-        ticker.next().await;
-    }
 }
 
 #[unsafe(link_section = ".bi_entries")]

@@ -35,6 +35,9 @@ use w5500_ll::net::Eui48Addr;
 use w5500_ll::{Registers, Sn};
 
 use crate::constants::HEARTBEAT_MAX_ALLOWED;
+use crate::types::CMDFromPCPublisher;
+use crate::types::F32Mutex;
+use crate::types::I32F32Mutex;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -122,10 +125,10 @@ pub async fn network_task(
     mut w5500: ExclusiveW5500,
     mut w5500_int: gpio::Input<'static>,
     status_ind: watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
-    cmd_channel: channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
+    cmd_from_pc_publisher: CMDFromPCPublisher,
+    motor_current_position: &'static I32F32Mutex,
+    motor_position_setpoint: &'static I32F32Mutex,
+    motor_speed_setpoint: &'static F32Mutex,
 ) {
     // Goal is to make this code have no panic points
     // Must loop until we are able to configure it.
@@ -154,7 +157,7 @@ pub async fn network_task(
             &w5500_lock,
             &mut w5500_int,
             &status_ind,
-            &cmd_channel,
+            &cmd_from_pc_publisher,
             motor_current_position,
             motor_position_setpoint,
             motor_speed_setpoint,
@@ -181,7 +184,7 @@ async fn handle_connection(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     w5500_int: &mut gpio::Input<'static>,
     status_ind: &watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
-    cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
+    cmd_from_pc_publisher: &CMDFromPCPublisher,
     motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
     motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
     motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
@@ -288,7 +291,7 @@ async fn handle_connection(
             w5500_mutex,
             w5500_int,
             &heartbeat_signal,
-            cmd_channel,
+            cmd_from_pc_publisher,
             motor_position_setpoint,
             motor_speed_setpoint,
         ),
@@ -341,7 +344,7 @@ async fn active_con_loop(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     w5500_int: &mut gpio::Input<'static>,
     heartbeat_signal: &Signal<NoopRawMutex, Heartbeat>,
-    cmd_channel: &channel::Sender<'static, CriticalSectionRawMutex, CmdFromPC, 16>,
+    cmd_from_pc_publisher: &CMDFromPCPublisher,
     motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
     motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
 ) -> Result<(), &'static str> {
@@ -410,7 +413,7 @@ async fn active_con_loop(
                 .map_err(|_| "Failed to deserialize CMD packet from PC")?;
             heartbeat_signal.signal(Heartbeat {});
             drop(w5500); // yield w5500 back before await point
-            cmd_channel.send(cmd_from_pc).await;
+            cmd_from_pc_publisher.publish(cmd_from_pc).await;
         }
 
         {

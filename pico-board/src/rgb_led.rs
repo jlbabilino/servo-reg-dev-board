@@ -1,7 +1,9 @@
 use embassy_futures::select::Either;
 use embassy_rp::pwm;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel};
+use embassy_sync::pubsub::WaitResult;
 use fixed::traits::ToFixed;
+
+use crate::types::LEDCommandSubscriber;
 
 /// LED "tick" rate, which is the rate at which an LED animation is played at in Hz.
 /// This should be fast enough to prevent visual flicker, but slow enough to prevent
@@ -70,7 +72,7 @@ pub fn set_rgb<'b>(
 pub async fn led_driver_task(
     mut led_green_a: pwm::Pwm<'static>,
     mut led_red_a_blue_b: pwm::Pwm<'static>,
-    led_command_receiver: channel::Receiver<'static, CriticalSectionRawMutex, Command, 16>,
+    mut led_command_receiver: LEDCommandSubscriber,
 ) {
     let mut led_pwm_update_loop =
         async |curr_anim: &crate::anim::Animation,
@@ -103,7 +105,7 @@ pub async fn led_driver_task(
     let mut transient_anim: Option<(crate::anim::Animation, embassy_time::Instant)> = None;
     loop {
         match embassy_futures::select::select(
-            led_command_receiver.receive(),
+            led_command_receiver.next_message(),
             match transient_anim {
                 // play a transient animation with given start time
                 Some(ref value) => led_pwm_update_loop(&value.0, false, Some(value.1)),
@@ -113,7 +115,7 @@ pub async fn led_driver_task(
         )
         .await
         {
-            Either::First(command) => {
+            Either::First(WaitResult::Message(command)) => {
                 match command {
                     Command::Transient(new_transient_anim) => {
                         // defmt::debug!("New transient animation");
@@ -124,6 +126,9 @@ pub async fn led_driver_task(
                         looping_anim = new_looping_animation;
                     }
                 };
+            }
+            Either::First(WaitResult::Lagged(num_msg)) => {
+                defmt::error!("LED command pubsub lagged! Missed {} messages", num_msg);
             }
             Either::Second(_) => {
                 // the looping animation will never end, so this must be a
