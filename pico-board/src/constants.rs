@@ -54,19 +54,45 @@ pub const MANUAL_ENABLED_ANIM: crate::anim::Animation =
 pub const MANUAL_MODE_1_ANIM: crate::anim::Animation =
     crate::anim::Animation::Pulse(crate::anim::Pulse::new(
         color::palette::css::GREEN.discard_alpha(), // color
-        embassy_time::Duration::from_millis(300),   // initial delay
-        embassy_time::Duration::from_millis(100),   // pulse width
-        embassy_time::Duration::from_millis(200),   // period
-        embassy_time::Duration::from_millis(700),   // final delay
+        embassy_time::Duration::from_millis(0),     // initial delay
+        embassy_time::Duration::from_millis(50),    // pulse width
+        embassy_time::Duration::from_millis(100),   // period
+        embassy_time::Duration::from_millis(900),   // final delay
         1,                                          // num of pulses
     ));
 
 pub const MANUAL_MODE_2_ANIM: crate::anim::Animation =
     crate::anim::Animation::Pulse(crate::anim::Pulse::new(
         color::palette::css::GREEN.discard_alpha(), // color
-        embassy_time::Duration::from_millis(300),   // initial delay
-        embassy_time::Duration::from_millis(100),   // pulse width
+        embassy_time::Duration::from_millis(0),     // initial delay
+        embassy_time::Duration::from_millis(50),    // pulse width
         embassy_time::Duration::from_millis(200),   // period
-        embassy_time::Duration::from_millis(500),   // final delay
+        embassy_time::Duration::from_millis(800),   // final delay
         2,                                          // num of pulses
+    ));
+
+pub const MANUAL_MODE_3_ANIM: crate::anim::Animation =
+    crate::anim::Animation::Pulse(crate::anim::Pulse::new(
+        color::palette::css::GREEN.discard_alpha(), // color
+        embassy_time::Duration::from_millis(0),     // initial delay
+        embassy_time::Duration::from_millis(50),    // pulse width
+        embassy_time::Duration::from_millis(200),   // period
+        embassy_time::Duration::from_millis(550),   // final delay
+        3,                                          // num of pulses
+    ));
+
+pub const QUICK_GREEN_PULSE: crate::anim::Animation =
+    crate::anim::Animation::Solid(crate::anim::Solid::new(
+        color::palette::css::GREEN.discard_alpha(),
+        embassy_time::Duration::from_millis(50),
+    ));
+
+pub const QUICK_GREEN_2_PULSE: crate::anim::Animation =
+    crate::anim::Animation::Pulse(crate::anim::Pulse::new(
+        color::palette::css::GREEN.discard_alpha(),
+        embassy_time::Duration::from_millis(0),
+        embassy_time::Duration::from_millis(100),
+        embassy_time::Duration::from_millis(200),
+        embassy_time::Duration::from_millis(0),
+        2,
     ));

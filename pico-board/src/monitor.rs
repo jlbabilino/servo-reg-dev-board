@@ -78,7 +78,7 @@ async fn report_motor_command(motor_command_subscriber: &mut MotorCommandSubscri
             defmt::error!("Motor command pubsub lagged! Missed {} messages", num_msg);
         }
         WaitResult::Message(new_value) => {
-            defmt::info!("Motor command: {:?}", new_value);
+            // defmt::info!("Motor command: {:?}", new_value);
         }
     }
 }
@@ -90,7 +90,7 @@ async fn report_led_command(led_command_subscriber: &mut LEDCommandSubscriber) {
             defmt::error!("LED command pubsub lagged! Missed {} messages", num_msg);
         }
         WaitResult::Message(new_value) => {
-            defmt::info!("LED Command: {:?}", new_value);
+            // defmt::info!("LED Command: {:?}", new_value);
         }
     }
 }

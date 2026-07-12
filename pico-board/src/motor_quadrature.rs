@@ -30,7 +30,7 @@ pub async fn motor_quadrature_task(
     mut quadrature_command_receiver: QuadratureCommandWatchReceiver,
 ) {
     let mut quadrature_loop = async |tracker: &mut HallAngleTracker| -> Result<(), &'static str> {
-        const QUADRATURE_LOOP_RATE: Duration = Duration::from_hz(100);
+        const QUADRATURE_LOOP_RATE: Duration = Duration::from_hz(3000);
         let loop_init_time = embassy_time::Instant::now();
         let mut ticker = embassy_time::Ticker::every(QUADRATURE_LOOP_RATE);
         ticker.reset_at(loop_init_time);
