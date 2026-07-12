@@ -42,6 +42,8 @@ use w5500_ll::eh1::vdm::W5500;
 use embassy_rp::adc;
 use embassy_rp::gpio;
 
+use crate::types::ButtonWatch;
+use crate::types::ButtonWatchReceiver;
 use crate::types::CMDFromPCPubSub;
 use crate::types::F32Mutex;
 use crate::types::I32F32Mutex;
@@ -86,10 +88,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     let esc_pwm_config = motor_control::pwm_config();
     let esc_pwm = pwm::Pwm::new_output_a(p.PWM_SLICE3, p.PIN_22, esc_pwm_config);
 
-    // let button_1 = gpio::Input::new(p.PIN_9, gpio::Pull::Up);
-    // let button_2 = gpio::Input::new(p.PIN_8, gpio::Pull::Up);
-    // let button_3 = gpio::Input::new(p.PIN_7, gpio::Pull::Up);
-    // let button_4 = gpio::Input::new(p.PIN_6, gpio::Pull::Up);
+    let button_1 = gpio::Input::new(p.PIN_9, gpio::Pull::Up);
+    let button_2 = gpio::Input::new(p.PIN_8, gpio::Pull::Up);
+    let button_3 = gpio::Input::new(p.PIN_7, gpio::Pull::Up);
+    let button_4 = gpio::Input::new(p.PIN_6, gpio::Pull::Up);
 
     // Initialize W5500 ethernet module
     let mut spi_cfg = spi::Config::default();
@@ -127,7 +129,12 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     static MOTOR_SPEED_SETPOINT: F32Mutex = blocking_mutex::Mutex::new(Cell::new(0.));
 
-    pub static LED_COMMAND_PUBSUB: LEDCommandPubSub = PubSubChannel::new();
+    static LED_COMMAND_PUBSUB: LEDCommandPubSub = PubSubChannel::new();
+
+    static BUTTON_1_WATCH: ButtonWatch = Watch::new();
+    static BUTTON_2_WATCH: ButtonWatch = Watch::new();
+    static BUTTON_3_WATCH: ButtonWatch = Watch::new();
+    static BUTTON_4_WATCH: ButtonWatch = Watch::new();
 
     // ========================================================================
     // ========================== RECEIVERS/SENDERS ===========================
@@ -137,9 +144,17 @@ async fn main(spawner: embassy_executor::Spawner) {
         defmt::error!("Failed to create quadrature command receiver!");
         return;
     };
+    let Some(quadrature_command_monitor) = QUADRATURE_COMMAND_WATCH.receiver() else {
+        defmt::error!("Failed to create quadrature command monitor!");
+        return;
+    };
+    let Some(quadrature_error_monitor) = QUADRATURE_ERROR_WATCH.receiver() else {
+        defmt::error!("Failed to create quadrature error monitor!");
+        return;
+    };
 
-    let Some(network_status_receiver_monitor) = NETWORK_STATUS_WATCH.receiver() else {
-        defmt::error!("Failed to create network status indictor receiver for monitor task!");
+    let Some(network_status_monitor) = NETWORK_STATUS_WATCH.receiver() else {
+        defmt::error!("Failed to create network status monitor!");
         return;
     };
 
@@ -147,14 +162,43 @@ async fn main(spawner: embassy_executor::Spawner) {
         defmt::error!("Failed to create motor command subscriber!");
         return;
     };
+    let Ok(motor_command_monitor) = MOTOR_COMMAND_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create motor command monitor!");
+        return;
+    };
 
     let Ok(led_command_subscriber) = LED_COMMAND_PUBSUB.subscriber() else {
         defmt::error!("Failed to create LED command subscriber!");
         return;
     };
+    let Ok(led_command_monitor) = LED_COMMAND_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create LED command monitor!");
+        return;
+    };
 
     let Ok(cmd_from_pc_publisher) = CMD_FROM_PC_PUBSUB.publisher() else {
         defmt::error!("Failed to create Network CMD from PC publisher!");
+        return;
+    };
+    let Ok(cmd_from_pc_monitor) = CMD_FROM_PC_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create Network CMD from PC monitor!");
+        return;
+    };
+
+    let Some(button_1_receiver) = BUTTON_1_WATCH.receiver() else {
+        defmt::error!("Failed to create button 1 receiver");
+        return;
+    };
+    let Some(button_2_receiver) = BUTTON_2_WATCH.receiver() else {
+        defmt::error!("Failed to create button 2 receiver");
+        return;
+    };
+    let Some(button_3_receiver) = BUTTON_3_WATCH.receiver() else {
+        defmt::error!("Failed to create button 3 receiver");
+        return;
+    };
+    let Some(button_4_receiver) = BUTTON_4_WATCH.receiver() else {
+        defmt::error!("Failed to create button 4 receiver");
         return;
     };
 
@@ -217,10 +261,45 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
 
     // Logging and console printing task
-    let Ok(monitor_task_token) =
-        monitor::monitor_task(network_status_receiver_monitor, &MOTOR_CURRENT_POSITION)
-    else {
+    let Ok(monitor_task_token) = monitor::monitor_task(
+        network_status_monitor,
+        cmd_from_pc_monitor,
+        &MOTOR_CURRENT_POSITION,
+        quadrature_error_monitor,
+        quadrature_command_monitor,
+        motor_command_monitor,
+        &MOTOR_POSITION_SETPOINT,
+        &MOTOR_SPEED_SETPOINT,
+        led_command_monitor,
+    ) else {
         defmt::error!("Failed to spawn monitor task!");
+        return;
+    };
+
+    let Ok(button_1_task_token) = buttons::button_task(button_1, BUTTON_1_WATCH.sender()) else {
+        defmt::error!("Failed to spawn button 1 debounce task");
+        return;
+    };
+    let Ok(button_2_task_token) = buttons::button_task(button_2, BUTTON_2_WATCH.sender()) else {
+        defmt::error!("Failed to spawn button 2 debounce task");
+        return;
+    };
+    let Ok(button_3_task_token) = buttons::button_task(button_3, BUTTON_3_WATCH.sender()) else {
+        defmt::error!("Failed to spawn button 3 debounce task");
+        return;
+    };
+    let Ok(button_4_task_token) = buttons::button_task(button_4, BUTTON_4_WATCH.sender()) else {
+        defmt::error!("Failed to spawn button 4 debounce task");
+        return;
+    };
+
+    let Ok(quick_tests_token) = quick_tests(
+        button_1_receiver,
+        button_2_receiver,
+        button_3_receiver,
+        button_4_receiver,
+    ) else {
+        defmt::error!("Failed to spawn quick tests tasks");
         return;
     };
 
@@ -230,6 +309,45 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(led_driver_task_token);
     spawner.spawn(network_task_token);
     spawner.spawn(monitor_task_token);
+    spawner.spawn(button_1_task_token);
+    spawner.spawn(button_2_task_token);
+    spawner.spawn(button_3_task_token);
+    spawner.spawn(button_4_task_token);
+
+    spawner.spawn(quick_tests_token);
+}
+
+#[embassy_executor::task]
+async fn quick_tests(
+    mut button_1_receiver: ButtonWatchReceiver,
+    mut button_2_receiver: ButtonWatchReceiver,
+    mut button_3_receiver: ButtonWatchReceiver,
+    mut button_4_receiver: ButtonWatchReceiver,
+) {
+    loop {
+        let waiters = [
+            report_button(&mut button_1_receiver, 1),
+            report_button(&mut button_2_receiver, 2),
+            report_button(&mut button_3_receiver, 3),
+            report_button(&mut button_4_receiver, 4),
+        ];
+        embassy_futures::select::select_array(waiters).await;
+    }
+}
+
+async fn report_button(button_receiver: &mut ButtonWatchReceiver, num: u16) {
+    let new_value = button_receiver.changed().await;
+    defmt::info!("Button {}: {:?}", num, new_value);
+}
+
+enum ButtonPress {
+    Short,
+    Long,
+}
+
+async fn wait_for_button_press(button_receiver: &mut ButtonWatchReceiver) {
+    // wait until released (false)
+    button_receiver.changed_and(|val| !*val).await;
 }
 
 #[unsafe(link_section = ".bi_entries")]

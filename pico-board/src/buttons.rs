@@ -1,18 +1,12 @@
 // Handles button software debouncing
-
-use embassy_futures::select::{Either, select};
-use embassy_rp::gpio::{self, Level};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
+use embassy_rp::gpio;
 use embassy_time::Timer;
 
-#[embassy_executor::task(pool_size = 4)]
-pub async fn button_task(
-    mut button: gpio::Input<'static>,
-    watch: &'static Watch<CriticalSectionRawMutex, bool, 4>,
-) -> ! {
-    const DEBOUNCE_MS: u64 = 50;
+use crate::types::ButtonWatchSender;
 
-    let sender = watch.sender();
+#[embassy_executor::task(pool_size = 4)]
+pub async fn button_task(mut button: gpio::Input<'static>, sender: ButtonWatchSender) -> ! {
+    const DEBOUNCE_MS: u64 = 50;
 
     loop {
         // Wait until pressed

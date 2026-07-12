@@ -1,5 +1,6 @@
 use core::cell::Cell;
 
+use color::OpaqueColor;
 use embassy_sync::{
     blocking_mutex::{self, raw::CriticalSectionRawMutex},
     pubsub, watch,
@@ -53,3 +54,7 @@ pub type LEDCommandPublisher =
     pubsub::Publisher<'static, CriticalSectionRawMutex, rgb_led::Command, 16, 4, 4>;
 pub type LEDCommandSubscriber =
     pubsub::Subscriber<'static, CriticalSectionRawMutex, rgb_led::Command, 16, 4, 4>;
+
+pub type ButtonWatch = watch::Watch<CriticalSectionRawMutex, bool, 4>;
+pub type ButtonWatchSender = watch::Sender<'static, CriticalSectionRawMutex, bool, 4>;
+pub type ButtonWatchReceiver = watch::Receiver<'static, CriticalSectionRawMutex, bool, 4>;

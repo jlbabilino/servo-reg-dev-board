@@ -1,4 +1,15 @@
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
+pub struct RGB(OpaqueColor<Srgb>);
+
+impl defmt::Format for RGB {
+    fn format(&self, fmt: defmt::Formatter) {
+        let [r, g, b] = self.0.components;
+
+        defmt::write!(fmt, "RGB({}, {}, {})", r, g, b);
+    }
+}
+
+#[derive(Copy, Clone, defmt::Format)]
 pub enum Animation {
     Off,
     Solid(Solid),
@@ -10,8 +21,6 @@ pub enum Animation {
 use color::{OpaqueColor, Srgb};
 
 use crate::util::{const_checked_add, const_checked_mul, const_checked_sub};
-
-trait ExtFormat: defmt::Format {}
 
 impl Animation {
     pub fn duration(&self) -> embassy_time::Duration {
@@ -27,7 +36,7 @@ impl Animation {
         let t = crate::util::rem(t, self.duration());
         match self {
             Self::Off => color::palette::css::BLACK.discard_alpha(),
-            Self::Solid(solid) => solid.color,
+            Self::Solid(solid) => solid.color.0,
             Self::Pulse(pulse) => {
                 if t < pulse.initial_delay || t >= (pulse.duration - pulse.final_delay) {
                     color::palette::css::BLACK.discard_alpha()
@@ -35,7 +44,7 @@ impl Animation {
                     let t_prime = t - pulse.initial_delay;
                     let t_rel = crate::util::rem(t_prime, pulse.period);
                     if t_rel < pulse.on_width {
-                        pulse.color
+                        pulse.color.0
                     } else {
                         color::palette::css::BLACK.discard_alpha()
                     }
@@ -48,7 +57,7 @@ impl Animation {
                 } else {
                     2. * (1. - t_norm)
                 };
-                fade_in_fade_out.color * brightness
+                fade_in_fade_out.color.0 * brightness
             }
             Self::Rainbow(rainbow) => {
                 let t_norm = crate::util::div(t, rainbow.duration);
@@ -62,15 +71,15 @@ impl Animation {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone, defmt::Format)]
 pub struct Solid {
-    color: OpaqueColor<Srgb>,
+    color: RGB,
     duration: embassy_time::Duration,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone, defmt::Format)]
 pub struct Pulse {
-    color: OpaqueColor<Srgb>,
+    color: RGB,
     initial_delay: embassy_time::Duration,
     final_delay: embassy_time::Duration,
     period: embassy_time::Duration,
@@ -78,13 +87,13 @@ pub struct Pulse {
     duration: embassy_time::Duration,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone, defmt::Format)]
 pub struct FadeInFadeOut {
-    color: color::OpaqueColor<Srgb>,
+    color: RGB,
     duration: embassy_time::Duration,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone, defmt::Format)]
 pub struct Rainbow {
     duration: embassy_time::Duration,
 }
@@ -93,7 +102,7 @@ impl Solid {
     pub const fn new(color: OpaqueColor<Srgb>, duration: embassy_time::Duration) -> Self {
         core::assert!(duration.as_ticks() >= 1);
         Solid {
-            color: color,
+            color: RGB(color),
             duration: duration,
         }
     }
@@ -122,7 +131,7 @@ impl Pulse {
         let duration = const_checked_add(on_off_duration, delays_total).unwrap();
 
         Pulse {
-            color: color,
+            color: RGB(color),
             initial_delay: initial_delay,
             final_delay: final_delay,
             period: period,
@@ -137,7 +146,7 @@ impl FadeInFadeOut {
         core::assert!(duration.as_ticks() >= 1);
 
         Self {
-            color: color,
+            color: RGB(color),
             duration: duration,
         }
     }

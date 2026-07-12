@@ -38,6 +38,7 @@ use crate::constants::HEARTBEAT_MAX_ALLOWED;
 use crate::types::CMDFromPCPublisher;
 use crate::types::F32Mutex;
 use crate::types::I32F32Mutex;
+use crate::types::NetworkStatusWatchSender;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -124,7 +125,7 @@ pub enum NetworkStatus {
 pub async fn network_task(
     mut w5500: ExclusiveW5500,
     mut w5500_int: gpio::Input<'static>,
-    status_ind: watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    status_sender: NetworkStatusWatchSender,
     cmd_from_pc_publisher: CMDFromPCPublisher,
     motor_current_position: &'static I32F32Mutex,
     motor_position_setpoint: &'static I32F32Mutex,
@@ -156,7 +157,7 @@ pub async fn network_task(
         match handle_connection(
             &w5500_lock,
             &mut w5500_int,
-            &status_ind,
+            &status_sender,
             &cmd_from_pc_publisher,
             motor_current_position,
             motor_position_setpoint,
@@ -172,7 +173,7 @@ pub async fn network_task(
             }
             Err(msg) => {
                 defmt::error!("Connection aborted: {}", msg);
-                status_ind.send(NetworkStatus::Disconnected);
+                status_sender.send(NetworkStatus::Disconnected);
                 Timer::after_secs(1).await;
                 continue;
             }
@@ -183,11 +184,11 @@ pub async fn network_task(
 async fn handle_connection(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     w5500_int: &mut gpio::Input<'static>,
-    status_ind: &watch::Sender<'static, CriticalSectionRawMutex, NetworkStatus, 4>,
+    status_sender: &NetworkStatusWatchSender,
     cmd_from_pc_publisher: &CMDFromPCPublisher,
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
+    motor_current_position: &'static I32F32Mutex,
+    motor_position_setpoint: &'static I32F32Mutex,
+    motor_speed_setpoint: &'static F32Mutex,
 ) -> Result<(), &'static str> {
     // Make sure W5500 starts in a disconnected state. For example, if pico
     // restarted and the w5500 is still connected to something, we close it
@@ -200,7 +201,7 @@ async fn handle_connection(
         // We assume W5500 CMD socket is disconnected/closed here
 
         // Indicate this closed state initialization
-        status_ind.send(NetworkStatus::Disconnected);
+        status_sender.send(NetworkStatus::Disconnected);
 
         // Get W5500 in a TCP listening state
         defmt::info!("Listening for CMD TCP server on port {}...", CMD_PORT);
@@ -270,7 +271,7 @@ async fn handle_connection(
 
         // Now we know W5500 is connected to client, so signal that
         defmt::info!("CMD TCP Connected!");
-        status_ind.send(NetworkStatus::Connected);
+        status_sender.send(NetworkStatus::Connected);
 
         // Configure interrupts to listen for disconnects and data
         configure_interrupts_active_con(&mut w5500)?;
@@ -320,7 +321,7 @@ async fn handle_connection(
     }
 
     // Now we know client gracefully disconnected
-    status_ind.send(NetworkStatus::Disconnected);
+    status_sender.send(NetworkStatus::Disconnected);
     Ok(())
 }
 
@@ -345,8 +346,8 @@ async fn active_con_loop(
     w5500_int: &mut gpio::Input<'static>,
     heartbeat_signal: &Signal<NoopRawMutex, Heartbeat>,
     cmd_from_pc_publisher: &CMDFromPCPublisher,
-    motor_position_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    motor_speed_setpoint: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<f32>>,
+    motor_position_setpoint: &'static I32F32Mutex,
+    motor_speed_setpoint: &'static F32Mutex,
 ) -> Result<(), &'static str> {
     loop {
         w5500_int.wait_for_low().await;

@@ -10,7 +10,7 @@ use crate::types::LEDCommandSubscriber;
 /// consuming too much CPU time.
 pub const LED_TICK_PERIOD: embassy_time::Duration = embassy_time::Duration::from_hz(100);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone, defmt::Format)]
 pub enum Command {
     Transient(crate::anim::Animation),
     Looping(crate::anim::Animation),

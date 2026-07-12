@@ -67,6 +67,9 @@ embassy-time-driver = "0.2.2"
 static_assertions = "1.1.0"
 serde = { version = "1.0.228", default-features = false }
 w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
+# futures = { version = "0.3.32", default-features = false, features = [
+#     "async-await",
+# ] }
 #     "rt",
 #     "critical-section-impl",
 #     "rom-func-cache",

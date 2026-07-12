@@ -8,6 +8,8 @@ use embassy_time::{Duration, Instant};
 use fixed::traits::ToFixed;
 use fixed::types::I32F32;
 
+use crate::types::{I32F32Mutex, QuadratureCommandWatchReceiver, QuadratureErrorWatchSender};
+
 #[derive(Copy, Clone, defmt::Format)]
 pub struct QuadratureError {}
 
@@ -23,17 +25,12 @@ pub async fn motor_quadrature_task(
     mut hall_a_pin: adc::Channel<'static>,
     mut hall_b_pin: adc::Channel<'static>,
     mut hall_c_pin: adc::Channel<'static>,
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
-    quadrature_error_sender: watch::Sender<'static, CriticalSectionRawMutex, QuadratureError, 4>,
-    mut quadrature_command_receiver: watch::Receiver<
-        'static,
-        CriticalSectionRawMutex,
-        QuadratureCommand,
-        4,
-    >,
+    motor_current_position: &'static I32F32Mutex,
+    quadrature_error_sender: QuadratureErrorWatchSender,
+    mut quadrature_command_receiver: QuadratureCommandWatchReceiver,
 ) {
     let mut quadrature_loop = async |tracker: &mut HallAngleTracker| -> Result<(), &'static str> {
-        const QUADRATURE_LOOP_RATE: Duration = Duration::from_hz(3000);
+        const QUADRATURE_LOOP_RATE: Duration = Duration::from_hz(100);
         let loop_init_time = embassy_time::Instant::now();
         let mut ticker = embassy_time::Ticker::every(QUADRATURE_LOOP_RATE);
         ticker.reset_at(loop_init_time);
@@ -57,6 +54,9 @@ pub async fn motor_quadrature_task(
             let ha_norm: f32 = (ha_raw as f32 - HA_AVG as f32) / HA_AMP as f32;
             let hb_norm: f32 = (hb_raw as f32 - HB_AVG as f32) / HB_AMP as f32;
             let hc_norm: f32 = (hc_raw as f32 - HC_AVG as f32) / HC_AMP as f32;
+            // defmt::info!("ha = {}", ha_raw);
+            // defmt::info!("hb = {}", hb_raw);
+            // defmt::info!("hc = {}", hc_raw);
 
             let new_angle = tracker.update(ha_norm, hb_norm, hc_norm)?;
 
@@ -87,7 +87,7 @@ pub async fn motor_quadrature_task(
                     late_timestamp_opt = Some(Instant::now());
                 }
             } else {
-                defmt::warn!("Failed to calculate if quadrature loop was late");
+                defmt::error!("Failed to calculate if quadrature loop was late");
             }
 
             ticker.next().await;
@@ -213,17 +213,17 @@ impl HallAngleTracker {
             + self.offset)
     }
 
-    pub fn reset(&mut self, init_angle: I32F32) {
-        let Some(prev_wrapped_angle) = self.prev_wrapped_angle else {
-            return;
-        };
-        let tau_fixed: I32F32 = consts::TAU.to_fixed::<I32F32>();
-        let cum_angle = (self.cum_rotations.to_fixed::<I32F32>() * tau_fixed)
-            + prev_wrapped_angle.to_fixed::<I32F32>();
-        self.offset = init_angle - cum_angle;
-    }
+    // pub fn reset(&mut self, init_angle: I32F32) {
+    //     let Some(prev_wrapped_angle) = self.prev_wrapped_angle else {
+    //         return;
+    //     };
+    //     let tau_fixed: I32F32 = consts::TAU.to_fixed::<I32F32>();
+    //     let cum_angle = (self.cum_rotations.to_fixed::<I32F32>() * tau_fixed)
+    //         + prev_wrapped_angle.to_fixed::<I32F32>();
+    //     self.offset = init_angle - cum_angle;
+    // }
 
-    pub fn zero(&mut self) {
-        self.reset(0.to_fixed());
-    }
+    // pub fn zero(&mut self) {
+    //     self.reset(0.to_fixed());
+    // }
 }
