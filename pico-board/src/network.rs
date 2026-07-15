@@ -273,17 +273,15 @@ async fn handle_connection(
             .map_err(|_| "Failed to clear CMD con interrupt")?;
 
         // Now we know W5500 is connected to client, so signal that
-        defmt::info!("CMD TCP Connected!");
         status_sender.send(NetworkStatus::Connected);
-
-        // Give other tasks a chance to respond to this change
-        Timer::after_millis(100).await;
 
         led_pub
             .publish(rgb_led::Command::Looping(
                 constants::CONNECTED_DISABLED_ANIM,
             ))
             .await;
+        // Give other tasks a chance to respond to this change
+        Timer::after_millis(100).await;
 
         // Configure interrupts to listen for disconnects and data
         configure_interrupts_active_con(&mut w5500)?;

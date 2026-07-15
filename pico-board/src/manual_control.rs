@@ -81,7 +81,6 @@ async fn handle_disabled_loop(
         let disabled_waiter = buttons::button_pressed_short_or_long(button_1_receiver);
 
         let disabled_code = async || {
-            defmt::info!("Disabled!");
             loop {
                 Timer::after_secs(1).await;
             }
