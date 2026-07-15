@@ -34,10 +34,13 @@ use w5500_ll::eh1::vdm::W5500;
 use w5500_ll::net::Eui48Addr;
 use w5500_ll::{Registers, Sn};
 
+use crate::constants;
 use crate::constants::HEARTBEAT_MAX_ALLOWED;
+use crate::rgb_led;
 use crate::types::CMDFromPCPublisher;
 use crate::types::F32Mutex;
 use crate::types::I32F32Mutex;
+use crate::types::LEDCommandPublisher;
 use crate::types::NetworkStatusWatchSender;
 
 pub type ExclusiveW5500 = W5500<
@@ -115,7 +118,7 @@ pub enum TelemFromPC {
 
 struct Heartbeat {}
 
-#[derive(Copy, Clone, defmt::Format)]
+#[derive(Copy, Clone, defmt::Format, PartialEq)]
 pub enum NetworkStatus {
     Disconnected,
     Connected,
@@ -130,6 +133,7 @@ pub async fn network_task(
     motor_current_position: &'static I32F32Mutex,
     motor_position_setpoint: &'static I32F32Mutex,
     motor_speed_setpoint: &'static F32Mutex,
+    mut led_pub: LEDCommandPublisher,
 ) {
     // Goal is to make this code have no panic points
     // Must loop until we are able to configure it.
@@ -162,6 +166,7 @@ pub async fn network_task(
             motor_current_position,
             motor_position_setpoint,
             motor_speed_setpoint,
+            &mut led_pub,
         )
         .await
         {
@@ -189,6 +194,7 @@ async fn handle_connection(
     motor_current_position: &'static I32F32Mutex,
     motor_position_setpoint: &'static I32F32Mutex,
     motor_speed_setpoint: &'static F32Mutex,
+    led_pub: &mut LEDCommandPublisher,
 ) -> Result<(), &'static str> {
     // Make sure W5500 starts in a disconnected state. For example, if pico
     // restarted and the w5500 is still connected to something, we close it
@@ -206,14 +212,11 @@ async fn handle_connection(
         // Get W5500 in a TCP listening state
         defmt::info!("Listening for CMD TCP server on port {}...", CMD_PORT);
 
-        let mut w5500 = w5500_mutex.lock().await;
         w5500
             .tcp_listen(CMD_SOCKET, CMD_PORT)
             .map_err(|_| "Failed to put W5500 in TCP listening mode")?;
 
         // Set only the interrupts we care about for waiting for a connection
-
-        let mut w5500 = w5500_mutex.lock().await;
         configure_interrupts_pre_con(&mut w5500)?;
     }
 
@@ -272,6 +275,15 @@ async fn handle_connection(
         // Now we know W5500 is connected to client, so signal that
         defmt::info!("CMD TCP Connected!");
         status_sender.send(NetworkStatus::Connected);
+
+        // Give other tasks a chance to respond to this change
+        Timer::after_millis(100).await;
+
+        led_pub
+            .publish(rgb_led::Command::Looping(
+                constants::CONNECTED_DISABLED_ANIM,
+            ))
+            .await;
 
         // Configure interrupts to listen for disconnects and data
         configure_interrupts_active_con(&mut w5500)?;

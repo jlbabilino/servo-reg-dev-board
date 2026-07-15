@@ -18,6 +18,7 @@
 mod anim;
 mod buttons;
 mod constants;
+mod manual_control;
 mod monitor;
 mod motor_control;
 mod motor_quadrature;
@@ -28,38 +29,26 @@ mod util;
 
 use core::cell::Cell;
 
-use embassy_futures::select::Either;
-use embassy_futures::select::select;
 use embassy_rp::peripherals::DMA_CH0;
 use embassy_rp::peripherals::DMA_CH1;
 use embassy_rp::pwm;
 use embassy_rp::spi;
 use embassy_sync::blocking_mutex;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
-use embassy_sync::signal::Signal;
 use embassy_sync::watch::Watch;
-use embassy_time::Instant;
-use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
-use fixed::traits::ToFixed;
 use fixed::types::I32F32;
 use w5500_ll::eh1::vdm::W5500;
 
 use embassy_rp::adc;
 use embassy_rp::gpio;
 
-use crate::buttons::ButtonPressed;
-use crate::motor_control::MotorCommand;
 use crate::types::ButtonWatch;
-use crate::types::ButtonWatchReceiver;
 use crate::types::CMDFromPCPubSub;
 use crate::types::F32Mutex;
 use crate::types::I32F32Mutex;
 use crate::types::LEDCommandPubSub;
-use crate::types::LEDCommandPublisher;
 use crate::types::MotorCommandPubSub;
-use crate::types::MotorCommandPublisher;
 use crate::types::NetworkStatusWatch;
 use crate::types::QuadratureCommandWatch;
 use crate::types::QuadratureErrorWatch;
@@ -164,6 +153,10 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
+    let Some(network_status_receiver) = NETWORK_STATUS_WATCH.receiver() else {
+        defmt::error!("Failed to create network status receiver!");
+        return;
+    };
     let Some(network_status_monitor) = NETWORK_STATUS_WATCH.receiver() else {
         defmt::error!("Failed to create network status monitor!");
         return;
@@ -213,8 +206,12 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
-    let Ok(led_pub) = LED_COMMAND_PUBSUB.publisher() else {
-        defmt::error!("Failed to create LED command publisher");
+    let Ok(led_pub_manual) = LED_COMMAND_PUBSUB.publisher() else {
+        defmt::error!("Failed to create LED command publisher for manual task");
+        return;
+    };
+    let Ok(led_pub_network) = LED_COMMAND_PUBSUB.publisher() else {
+        defmt::error!("Failed to create LED command publisher for network task");
         return;
     };
     let Ok(motor_cmd_pub) = MOTOR_COMMAND_PUBSUB.publisher() else {
@@ -275,6 +272,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         &MOTOR_CURRENT_POSITION,
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
+        led_pub_network,
     ) else {
         defmt::error!("Failed to spawn ethernet/network task!");
         return;
@@ -313,14 +311,15 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
-    let Ok(quick_tests_token) = quick_tests(
+    let Ok(quick_tests_token) = manual_control::manual_mode_task(
         button_1_receiver,
         button_2_receiver,
         button_3_receiver,
         button_4_receiver,
-        led_pub,
+        led_pub_manual,
         motor_cmd_pub,
         &MOTOR_CURRENT_POSITION,
+        network_status_receiver,
     ) else {
         defmt::error!("Failed to spawn quick tests tasks");
         return;
@@ -338,250 +337,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(button_4_task_token);
 
     spawner.spawn(quick_tests_token);
-}
-
-#[embassy_executor::task]
-async fn quick_tests(
-    mut button_1_receiver: ButtonWatchReceiver,
-    mut button_2_receiver: ButtonWatchReceiver,
-    mut button_3_receiver: ButtonWatchReceiver,
-    mut button_4_receiver: ButtonWatchReceiver,
-    led_pub: LEDCommandPublisher,
-    motor_cmd_pub: MotorCommandPublisher,
-    motor_current_position: &'static I32F32Mutex,
-) {
-    // loop {
-    //     let waiters = [
-    //         report_button(&mut button_1_receiver, 1),
-    //         report_button(&mut button_2_receiver, 2),
-    //         report_button(&mut button_3_receiver, 3),
-    //         report_button(&mut button_4_receiver, 4),
-    //     ];
-    //     embassy_futures::select::select_array(waiters).await;
-    // }
-
-    // loop {
-    //     match wait_for_button_press(&mut button_1_receiver).await {
-    //         ButtonPress::Short => {
-    //             led_pub
-    //                 .publish(rgb_led::Command::Transient(constants::QUICK_GREEN_PULSE))
-    //                 .await;
-    //         }
-    //         ButtonPress::Long => {
-    //             led_pub
-    //                 .publish(rgb_led::Command::Transient(constants::QUICK_GREEN_2_PULSE))
-    //                 .await;
-    //         }
-    //     }
-    // }
-
-    // let my_signal: Signal<NoopRawMutex, u32> = Signal::new();
-
-    // let typematic_task =
-    //     buttons::signal_button_presses_typematic(&mut button_1_receiver, &my_signal);
-
-    // let listener = async || {
-    //     loop {
-    //         let new_val = my_signal.wait().await;
-    //         defmt::info!("Typematic: {}", new_val);
-    //     }
-    // };
-
-    // embassy_futures::select::select(typematic_task, listener()).await;
-
-    'disabled: loop {
-        // Disabled
-        motor_cmd_pub.publish(MotorCommand::Disabled).await;
-        led_pub
-            .publish(rgb_led::Command::Looping(
-                constants::DISCONNECTED_DISABLED_ANIM,
-            ))
-            .await;
-        let disabled_waiter = buttons::button_pressed_short_or_long(&mut button_1_receiver);
-
-        let disabled_code = async || {
-            defmt::info!("Disabled!");
-            loop {
-                Timer::after_secs(1).await;
-            }
-        };
-
-        match select(disabled_waiter, disabled_code()).await {
-            Either::First(ButtonPressed::Long) => {
-                // If long pressed, move to the next thing
-            }
-            Either::First(ButtonPressed::Short) => {
-                // If short pressed, you are "disabling" it but it's
-                // already disabled, so yeah
-                continue 'disabled;
-            }
-            Either::Second(_) => {
-                defmt::error!("Disabled code written incorrectly!");
-                continue 'disabled;
-            }
-        };
-
-        loop {
-            // Mode 1 - Speed Control
-            motor_cmd_pub.publish(MotorCommand::Disabled).await;
-            led_pub
-                .publish(rgb_led::Command::Looping(constants::MANUAL_MODE_1_ANIM))
-                .await;
-
-            let mode_1_waiter = buttons::button_pressed_short_or_long(&mut button_1_receiver);
-
-            let mut mode_1_code = async || {
-                defmt::info!("Mode 1!");
-                loop {
-                    let left_button = button_2_receiver.get().await;
-                    let right_button = button_4_receiver.get().await;
-
-                    let motor_command = match (left_button, right_button) {
-                        (true, false) => {
-                            // Move motor clockwise
-                            MotorCommand::Speed(0.1)
-                        }
-                        (false, true) => {
-                            // Move motor counter-clockwise
-                            MotorCommand::Speed(-0.1)
-                        }
-                        (false, false) => MotorCommand::Disabled,
-                        (true, true) => MotorCommand::Brake,
-                    };
-
-                    motor_cmd_pub.publish(motor_command).await;
-
-                    select(button_2_receiver.changed(), button_4_receiver.changed()).await;
-                }
-            };
-
-            match select(mode_1_waiter, mode_1_code()).await {
-                Either::First(ButtonPressed::Long) => {
-                    // If long pressed, move to the next thing
-                }
-                Either::First(ButtonPressed::Short) => {
-                    // If short pressed, you are "disabling"
-                    continue 'disabled;
-                }
-                Either::Second(_) => {
-                    defmt::error!("Mode 1 code written incorrectly!");
-                    continue 'disabled;
-                }
-            };
-
-            // Mode 2 - Position control
-            motor_cmd_pub.publish(MotorCommand::Disabled).await;
-            led_pub
-                .publish(rgb_led::Command::Looping(constants::MANUAL_MODE_2_ANIM))
-                .await;
-
-            let mode_2_waiter = buttons::button_pressed_short_or_long(&mut button_1_receiver);
-
-            let left_signal: Signal<NoopRawMutex, u32> = Signal::new();
-            let right_signal: Signal<NoopRawMutex, u32> = Signal::new();
-
-            let left_typematic =
-                buttons::signal_button_presses_typematic(&mut button_2_receiver, &left_signal);
-            let right_typematic =
-                buttons::signal_button_presses_typematic(&mut button_4_receiver, &right_signal);
-
-            let mode_2_actual_code = async || {
-                defmt::info!("Mode 2!");
-                let mut current_pos = motor_current_position.lock(|val| val.get());
-                let increment: I32F32 = 6.28319.to_fixed();
-
-                loop {
-                    motor_cmd_pub
-                        .publish(MotorCommand::Position(current_pos))
-                        .await;
-                    match select(left_signal.wait(), right_signal.wait()).await {
-                        Either::First(_) => current_pos += increment,
-                        Either::Second(_) => current_pos -= increment,
-                    };
-                }
-            };
-
-            let mode_2_code = embassy_futures::select::select3(
-                left_typematic,
-                right_typematic,
-                mode_2_actual_code(),
-            );
-
-            match select(mode_2_waiter, mode_2_code).await {
-                Either::First(ButtonPressed::Long) => {
-                    // If long pressed, move to the next thing
-                }
-                Either::First(ButtonPressed::Short) => {
-                    // If short pressed, you are "disabling"
-                    continue 'disabled;
-                }
-                Either::Second(_) => {
-                    defmt::error!("Mode 2 code written incorrectly!");
-                    continue 'disabled;
-                }
-            };
-
-            // Mode 3
-            led_pub
-                .publish(rgb_led::Command::Looping(constants::MANUAL_MODE_3_ANIM))
-                .await;
-
-            let mode_3_waiter = buttons::button_pressed_short_or_long(&mut button_1_receiver);
-
-            let mode_3_code = async || {
-                defmt::info!("Mode 3!");
-                loop {
-                    Timer::after_secs(1).await;
-                }
-            };
-
-            match select(mode_3_waiter, mode_3_code()).await {
-                Either::First(ButtonPressed::Long) => {
-                    // If long pressed, move to the next thing
-                }
-                Either::First(ButtonPressed::Short) => {
-                    // If short pressed, you are "disabling"
-                    continue 'disabled;
-                }
-                Either::Second(_) => {
-                    defmt::error!("Mode 3 code written incorrectly!");
-                    continue 'disabled;
-                }
-            };
-        }
-    }
-}
-
-async fn report_button(button_receiver: &mut ButtonWatchReceiver, num: u16) {
-    let new_value = button_receiver.changed().await;
-    defmt::info!("Button {}: {:?}", num, new_value);
-}
-
-enum ButtonPress {
-    Short,
-    Long,
-}
-
-async fn wait_for_button_press(button_receiver: &mut ButtonWatchReceiver) -> ButtonPress {
-    // wait until released (false)
-    button_receiver.get_and(|val| !*val).await;
-
-    // wait until pressed (true)
-    button_receiver.changed_and(|val| *val).await;
-
-    let until_released = button_receiver.changed_and(|val| !*val);
-    let until_considered_long = Timer::after_millis(1000);
-
-    match embassy_futures::select::select(until_released, until_considered_long).await {
-        Either::First(_) => {
-            // button was released before long threshold
-            ButtonPress::Short
-        }
-        Either::Second(_) => {
-            // button was held until threshold
-            ButtonPress::Long
-        }
-    }
 }
 
 // async fn signal_presses(button_receiver: &mut ButtonWatchReceiver, signal: )
