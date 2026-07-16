@@ -1,0 +1,5 @@
+
+
+[workspace]
+members = ["pico_program", "bindings_gen", "shared_types"]
+resolver = "2"

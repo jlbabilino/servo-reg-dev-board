@@ -181,7 +181,7 @@ async def main():
                     if input_task.done():
                         # Must have hit ctrl+C
                         return
-                    
+
 
 
         except TypeError as e:

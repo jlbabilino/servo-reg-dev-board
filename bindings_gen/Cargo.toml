@@ -1,0 +1,8 @@
+[package]
+name = "bindings_gen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+postcard-bindgen = { version = "0.7.1", features = ["generating"] }
+shared_types = { path = "../shared_types", features = ["postcard-bindgen"] }

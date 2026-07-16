@@ -6,7 +6,7 @@
 //!
 //! Set up linker scripts
 
-use std::fs::{ File, read_to_string };
+use std::fs::{File, read_to_string};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -52,9 +52,9 @@ fn main() {
     }
 
     let re = Regex::new(r"target = .*").unwrap();
-    let config_toml = include_str!(".cargo/config.toml");
+    let config_toml = include_str!("../.cargo/config.toml");
     let result = re.replace(config_toml, format!("target = \"{}\"", target));
-    let mut f = File::create(".cargo/config.toml").unwrap();
+    let mut f = File::create("../.cargo/config.toml").unwrap();
     f.write_all(result.as_bytes()).unwrap();
 
     // The file `rp2350_riscv.x` is what we specify in `.cargo/config.toml` for
