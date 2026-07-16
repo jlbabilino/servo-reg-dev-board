@@ -5,8 +5,8 @@ Rust code for a Raspberry Pi Pico 2W that controls a custom electronic gas regul
 
 ## Pico Program
 
-cargo run --release -p pico_program
+cargo run-pico
 
 ## Generating Python bindings
 
-cargo run --release -p bindings_gen --target x86_64-pc-windows-msvc
+cargo +nightly make-bindings

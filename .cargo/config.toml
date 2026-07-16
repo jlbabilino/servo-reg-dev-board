@@ -2,6 +2,8 @@
 run-pico = "run --release -p pico_program --target thumbv8m.main-none-eabihf"
 make-bindings = "run --release -p bindings_gen"
 
+target = "thumbv8m.main-none-eabihf"
+
 [build]
 
 
@@ -20,3 +22,6 @@ rustflags = [
 
 # runner = "${PICOTOOL_PATH} load -u -v -x -t elf"
 runner = "probe-rs run --chip RP235X --protocol swd"
+
+[env]
+DEFMT_LOG = "debug"

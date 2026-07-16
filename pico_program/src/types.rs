@@ -6,11 +6,12 @@ use embassy_sync::{
     pubsub, watch,
 };
 use fixed::types::I32F32;
+use shared_types::CmdFromPC;
 
 use crate::{
     motor_control::MotorCommand,
     motor_quadrature::{QuadratureCommand, QuadratureError},
-    network::{CmdFromPC, NetworkStatus},
+    network::NetworkStatus,
     rgb_led,
 };
 

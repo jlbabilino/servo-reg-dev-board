@@ -23,6 +23,9 @@ use fixed::traits::ToFixed;
 use fixed::types::I32F32;
 use serde::Deserialize;
 use serde::Serialize;
+use shared_types::CmdFromPC;
+use shared_types::TelemFromPC;
+use shared_types::TelemToPC;
 use w5500_hl::Tcp;
 use w5500_hl::Udp;
 use w5500_ll::Interrupt;
@@ -96,26 +99,6 @@ const DISABLED_ANIM: crate::rgb_led::Command = crate::rgb_led::Command::Looping(
 /// position.
 ///
 
-#[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
-pub enum CmdFromPC {
-    Disable,
-    Heartbeat,
-    PIDSet(f32, f32, f32),
-    PIDGet,
-    Enable,
-}
-
-#[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
-pub enum TelemToPC {
-    MotorPosition(f32),
-}
-
-#[derive(Copy, Clone, defmt::Format, Serialize, Deserialize)]
-pub enum TelemFromPC {
-    MotorPositionSetpoint(f32),
-    MotorSpeedSetpoint(f32),
-}
-
 struct Heartbeat {}
 
 #[derive(Copy, Clone, defmt::Format, PartialEq)]
@@ -140,17 +123,31 @@ pub async fn network_task(
     // Since W5500 module can be physically disconnected from the Pico (it's
     // not soldered yet), it may loop here until you plug it in
     loop {
-        match configure_w5500(&mut w5500) {
-            Ok(_) => {
+        match (
+            configure_w5500(&mut w5500),
+            force_close_cmd(&mut w5500).await,
+        ) {
+            (Ok(_), Ok(_)) => {
                 break;
             }
-            Err(msg) => {
+            (Err(msg), _) => {
                 defmt::error!(
                     "Failed to do initial configuration of W5500 (is the W5500 module plugged in?): {}",
                     msg
                 );
             }
+            (_, Err(msg)) => {
+                defmt::error!(
+                    "Failed to do initial reset of W5500 (is the W5500 module plugged in?): {}",
+                    msg
+                );
+            }
         }
+
+        // We assume W5500 CMD socket is disconnected/closed here
+
+        // Indicate this closed state initialization
+        status_sender.send(NetworkStatus::Disconnected);
         Timer::after_secs(1).await;
     }
 
@@ -205,9 +202,6 @@ async fn handle_connection(
         force_close_cmd(&mut w5500).await?;
 
         // We assume W5500 CMD socket is disconnected/closed here
-
-        // Indicate this closed state initialization
-        status_sender.send(NetworkStatus::Disconnected);
 
         // Get W5500 in a TCP listening state
         defmt::info!("Listening for CMD TCP server on port {}...", CMD_PORT);
@@ -410,15 +404,15 @@ async fn active_con_loop(
             w5500
                 .set_sn_ir(CMD_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
                 .map_err(|_| "Failed to clear CMD socket recv interrupt")?;
-            let mut buff = [0; 64];
-            const PACKET_SIZE: usize = size_of::<CmdFromPC>();
+            const PACKET_BUF_SIZE: usize = 16;
+            let mut buff = [0; PACKET_BUF_SIZE];
             let num_bytes_read = w5500
                 .tcp_read(CMD_SOCKET, &mut buff)
                 .map_err(|_| "Failed to read TCP message on CMD socket")?;
             let bytes_slice: &[u8] = &buff[..num_bytes_read as usize];
-            if num_bytes_read as usize != PACKET_SIZE {
-                return Err("Received packet of incorrect size on CMD socket");
-            }
+            // if num_bytes_read as usize != PACKET_BUF_SIZE {
+            //     return Err("Received packet of incorrect size on CMD socket");
+            // }
 
             let cmd_from_pc = postcard::from_bytes::<CmdFromPC>(bytes_slice)
                 .map_err(|_| "Failed to deserialize CMD packet from PC")?;
@@ -477,17 +471,17 @@ async fn push_telemetry(
             let mut w5500 = w5500_mutex.lock().await;
             let motor_angle_packet =
                 TelemToPC::MotorPosition(motor_current_position.lock(|cell| cell.get().to_num()));
-            const PACKET_SIZE: usize = size_of::<TelemToPC>();
-            let mut buf: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
+            const PACKET_BUF_SIZE: usize = 16;
+            let mut buf: [u8; PACKET_BUF_SIZE] = [0; PACKET_BUF_SIZE];
             postcard::to_slice(&motor_angle_packet, &mut buf)
                 .map_err(|_| "Failed to serialize TelemToPC into a byte buffer")?;
 
             let num_bytes = w5500
                 .udp_send_to(TELEM_SOCKET, &buf, &SocketAddrV4::new(PC_ADDR, TELEM_PORT))
                 .map_err(|_| "Failed to send UDP telemetry packet")?;
-            if num_bytes as usize != PACKET_SIZE {
-                return Err("Telemetry packet size mismatch");
-            }
+            // if num_bytes as usize != PACKET_BUF_SIZE {
+            //     return Err("Telemetry packet size mismatch");
+            // }
         }
         ticker.next().await;
     }

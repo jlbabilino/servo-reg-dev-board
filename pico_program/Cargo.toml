@@ -75,3 +75,5 @@ w5500-ll = { version = "0.13.0", features = ["defmt", "eh1"] }
 #     "rom-func-cache",
 #     "dcp-fast-f64",
 # ] }
+
+shared_types = { path = "../shared_types", features = ["defmt"] }

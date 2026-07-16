@@ -7,13 +7,14 @@ import struct
 import math
 import synnax as sy
 import synnax.framer.streamer as sy_str
+import servo_reg_com
 
 CMD_PORT = 15397
 TELEM_PORT = 15509
 
 PICO_IP = "192.168.1.20"
 
-class UDPClientProtocol:
+class UDPClientProtocol(asyncio.BaseProtocol):
     def __init__(self, synnax_writer: sy.Writer, time_ch: sy.Channel, motor_angle_ch: sy.Channel):
         self.synnax_writer = synnax_writer
         self.time_ch = time_ch
@@ -23,12 +24,15 @@ class UDPClientProtocol:
         print("Connection made")
         self.transport = transport
 
-    def datagram_received(self, data, addr):
-        x = struct.unpack('<f', data)[0]
-        as_deg = math.degrees(x)
-        # print(f"Data: {as_deg}")
-        self.synnax_writer.write(channels_or_data=[self.time_ch.key, self.motor_angle_ch.key], series=[[sy.TimeStamp.now()], [as_deg]])
-        self.synnax_writer.commit()
+    def datagram_received(self, data: bytes, addr):
+        # x = struct.unpack('<f', data)[0]
+        (value, num_bytes) = servo_reg_com.deserialize(servo_reg_com.TelemToPC, data)
+        
+        if isinstance(value, servo_reg_com.TelemToPC_MotorPosition):
+            as_deg = math.degrees(value[0])
+            print(f"Data: {as_deg}")
+            # self.synnax_writer.write(channels_or_data=[self.time_ch.key, self.motor_angle_ch.key], series=[[sy.TimeStamp.now()], [as_deg]])
+            # self.synnax_writer.commit()
 
     def error_received(self, exc):
         print(f"Error received: {exc}")
@@ -61,30 +65,36 @@ async def input_prompt(telem_transport: asyncio.DatagramTransport, synnax_stream
                 time_values = frame[time_ch.key]
                 motor_cmd_values = frame[motor_cmd_ch.key]
 
-                # print(time_values)
-                # print(motor_cmd_values)
-
                 for value in motor_cmd_values:
-                    try_float = math.radians(float(value))
-                    telem_transport.sendto(struct.pack('<f', try_float))
-                    print_formatted_text(f"Sent {value}")
+                    if isinstance(value, float):
+                        try_float = math.radians(float(value))
+                        packet = servo_reg_com.serialize(servo_reg_com.TelemFromPC_MotorPositionSetpoint(try_float))
+                        telem_transport.sendto(packet)
+                        print_formatted_text(f"Sent {try_float}")
     except asyncio.CancelledError:
         pass
 
-async def watchdog_receiver(cmd_reader: asyncio.streams.StreamReader):
+async def heartbeat_sender(cmd_writer: asyncio.streams.StreamWriter):
+    heartbeat_packet = servo_reg_com.serialize(servo_reg_com.CmdFromPC_Heartbeat())
+
     try:
         while True:
             try:
-                async with asyncio.timeout(2.0):
-                    MAGIC = b'\xa4'
-                    
-                    value = await cmd_reader.read(1)
+                await asyncio.sleep(0.1)
 
-                    if value != MAGIC:
-                        print_formatted_text("Disconnected")
-                        return
-                    continue
-                return
+                cmd_writer.write(heartbeat_packet)
+                await cmd_writer.drain()
+                
+                # async with asyncio.timeout(2.0):
+                #     MAGIC = b'\xa4'
+                    
+                #     value = await cmd_reader.read(1)
+
+                #     if value != MAGIC:
+                #         print_formatted_text("Disconnected")
+                #         return
+                #     continue
+                # return
             except ConnectionAbortedError:
                 print_formatted_text("Connection lost")
                 return
@@ -93,8 +103,6 @@ async def watchdog_receiver(cmd_reader: asyncio.streams.StreamReader):
                 return
     except asyncio.CancelledError:
         pass
-
-        
 
 async def main():
     # CLIENT SIDE CODE
@@ -165,7 +173,7 @@ async def main():
                     telem_transport, telem_protocol = await loop.create_datagram_endpoint(
                         lambda: UDPClientProtocol(synnax_writer, time_ch, motor_angle_ch), local_addr=('0.0.0.0', TELEM_PORT), remote_addr=(PICO_IP, TELEM_PORT))
 
-                    watchdog_task = asyncio.create_task(watchdog_receiver(cmd_reader), name = "watchdog")
+                    watchdog_task = asyncio.create_task(heartbeat_sender(cmd_writer), name = "watchdog")
                     input_task = asyncio.create_task(input_prompt(telem_transport, synnax_streamer, motor_cmd_ch, time_ch), name = "input-task")
 
                     await asyncio.wait([watchdog_task, input_task],

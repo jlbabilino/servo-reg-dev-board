@@ -5,7 +5,7 @@ use shared_types::{CmdFromPC, TelemFromPC, TelemToPC};
 
 fn main() {
     let mut output_dir = std::env::current_dir().unwrap();
-    output_dir.push("synnax-client");
+    output_dir.push("synnax-client-py");
     output_dir.push("build");
 
     python::build_package(

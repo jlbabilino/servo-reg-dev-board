@@ -10,5 +10,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["prompt-toolkit>=3.0.0", "synnax>=0.40.0"]
 
-[tool.setuptools]
-packages = ["synnax-client-py"]
+[tool.setuptools.packages.find]
+where = ["synnax-client-py"]
+include = ["build*"]
