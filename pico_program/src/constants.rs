@@ -1,5 +1,3 @@
-use core::f32::consts::PI;
-
 pub const HA_MAX: u16 = 3587;
 pub const HB_MAX: u16 = 3618;
 pub const HC_MAX: u16 = 3571;
@@ -19,7 +17,6 @@ pub const HC_AMP: u16 = (HC_MAX - HC_MIN) / 2;
 pub const SQRT_3: f32 = 1.732050807568877293527446341505872367_f32;
 
 pub const HEARTBEAT_MAX_ALLOWED: embassy_time::Duration = embassy_time::Duration::from_millis(500);
-pub const HEARTBEAT_BYTE: u8 = 0x42;
 
 pub const DISCONNECTED_DISABLED_ANIM: crate::anim::Animation =
     crate::anim::Animation::FadeInFadeOut(crate::anim::FadeInFadeOut::new(
@@ -73,18 +70,28 @@ pub const MANUAL_MODE_3_ANIM: crate::anim::Animation =
         3,                                           // num of pulses
     ));
 
-pub const QUICK_GREEN_PULSE: crate::anim::Animation =
-    crate::anim::Animation::Solid(crate::anim::Solid::new(
-        color::palette::css::GREEN.discard_alpha(),
-        embassy_time::Duration::from_millis(50),
-    ));
+// pub const QUICK_GREEN_PULSE: crate::anim::Animation =
+//     crate::anim::Animation::Solid(crate::anim::Solid::new(
+//         color::palette::css::GREEN.discard_alpha(),
+//         embassy_time::Duration::from_millis(50),
+//     ));
 
-pub const QUICK_GREEN_2_PULSE: crate::anim::Animation =
+pub const QUADRATURE_ERROR_ANIM: crate::anim::Animation =
     crate::anim::Animation::Pulse(crate::anim::Pulse::new(
-        color::palette::css::GREEN.discard_alpha(),
+        color::palette::css::RED.discard_alpha(),
         embassy_time::Duration::from_millis(0),
         embassy_time::Duration::from_millis(100),
         embassy_time::Duration::from_millis(200),
         embassy_time::Duration::from_millis(0),
         2,
     ));
+
+// pub const QUICK_GREEN_2_PULSE: crate::anim::Animation =
+//     crate::anim::Animation::Pulse(crate::anim::Pulse::new(
+//         color::palette::css::GREEN.discard_alpha(),
+//         embassy_time::Duration::from_millis(0),
+//         embassy_time::Duration::from_millis(100),
+//         embassy_time::Duration::from_millis(200),
+//         embassy_time::Duration::from_millis(0),
+//         2,
+//     ));

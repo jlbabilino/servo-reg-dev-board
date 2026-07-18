@@ -52,6 +52,7 @@ use crate::types::MotorCommandPubSub;
 use crate::types::NetworkStatusWatch;
 use crate::types::QuadratureCommandWatch;
 use crate::types::QuadratureErrorWatch;
+use crate::types::ResponseToPCPubSub;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -110,6 +111,7 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     static NETWORK_STATUS_WATCH: NetworkStatusWatch = Watch::new();
     static CMD_FROM_PC_PUBSUB: CMDFromPCPubSub = PubSubChannel::new();
+    static RESP_TO_PC_PUBSUB: ResponseToPCPubSub = PubSubChannel::new();
 
     /// Indicates current position of the motor as measured by the hall effect
     /// sensor. Updated by motor_quadrature
@@ -148,6 +150,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         defmt::error!("Failed to create quadrature command monitor!");
         return;
     };
+
+    let Some(quadrature_error_receiver) = QUADRATURE_ERROR_WATCH.receiver() else {
+        defmt::error!("Failed to create quadrature error receiver!");
+        return;
+    };
     let Some(quadrature_error_monitor) = QUADRATURE_ERROR_WATCH.receiver() else {
         defmt::error!("Failed to create quadrature error monitor!");
         return;
@@ -184,8 +191,25 @@ async fn main(spawner: embassy_executor::Spawner) {
         defmt::error!("Failed to create Network CMD from PC publisher!");
         return;
     };
+    let Ok(cmd_from_pc_subscriber) = CMD_FROM_PC_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create Network CMD from PC subscriber!");
+        return;
+    };
     let Ok(cmd_from_pc_monitor) = CMD_FROM_PC_PUBSUB.subscriber() else {
         defmt::error!("Failed to create Network CMD from PC monitor!");
+        return;
+    };
+
+    let Ok(resp_to_pc_publisher) = RESP_TO_PC_PUBSUB.publisher() else {
+        defmt::error!("Failed to create response to PC publisher!");
+        return;
+    };
+    let Ok(resp_to_pc_subscriber) = RESP_TO_PC_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create response to PC subscriber!");
+        return;
+    };
+    let Ok(resp_to_pc_monitor) = RESP_TO_PC_PUBSUB.subscriber() else {
+        defmt::error!("Failed to create response to PC monitor!");
         return;
     };
 
@@ -203,6 +227,23 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
     let Some(button_4_receiver) = BUTTON_4_WATCH.receiver() else {
         defmt::error!("Failed to create button 4 receiver");
+        return;
+    };
+
+    let Some(button_1_monitor) = BUTTON_1_WATCH.receiver() else {
+        defmt::error!("Failed to create button 1 monitor");
+        return;
+    };
+    let Some(button_2_monitor) = BUTTON_2_WATCH.receiver() else {
+        defmt::error!("Failed to create button 2 monitor");
+        return;
+    };
+    let Some(button_3_monitor) = BUTTON_3_WATCH.receiver() else {
+        defmt::error!("Failed to create button 3 monitor");
+        return;
+    };
+    let Some(button_4_monitor) = BUTTON_4_WATCH.receiver() else {
+        defmt::error!("Failed to create button 4 monitor");
         return;
     };
 
@@ -269,6 +310,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         w5500_int,
         NETWORK_STATUS_WATCH.sender(),
         cmd_from_pc_publisher,
+        resp_to_pc_subscriber,
         &MOTOR_CURRENT_POSITION,
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
@@ -282,6 +324,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let Ok(monitor_task_token) = monitor::monitor_task(
         network_status_monitor,
         cmd_from_pc_monitor,
+        resp_to_pc_monitor,
         &MOTOR_CURRENT_POSITION,
         quadrature_error_monitor,
         quadrature_command_monitor,
@@ -289,6 +332,10 @@ async fn main(spawner: embassy_executor::Spawner) {
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
         led_command_monitor,
+        button_1_monitor,
+        button_2_monitor,
+        button_3_monitor,
+        button_4_monitor,
     ) else {
         defmt::error!("Failed to spawn monitor task!");
         return;
@@ -311,15 +358,19 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
-    let Ok(quick_tests_token) = manual_control::manual_mode_task(
+    let Ok(state_manager_token) = manual_control::manual_mode_task(
         button_1_receiver,
         button_2_receiver,
         button_3_receiver,
         button_4_receiver,
         led_pub_manual,
         motor_cmd_pub,
+        QUADRATURE_COMMAND_WATCH.sender(),
+        quadrature_error_receiver,
         &MOTOR_CURRENT_POSITION,
         network_status_receiver,
+        cmd_from_pc_subscriber,
+        resp_to_pc_publisher,
     ) else {
         defmt::error!("Failed to spawn quick tests tasks");
         return;
@@ -335,8 +386,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.spawn(button_2_task_token);
     spawner.spawn(button_3_task_token);
     spawner.spawn(button_4_task_token);
-
-    spawner.spawn(quick_tests_token);
+    spawner.spawn(state_manager_token);
 }
 
 // async fn signal_presses(button_receiver: &mut ButtonWatchReceiver, signal: )

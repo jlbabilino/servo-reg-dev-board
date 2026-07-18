@@ -60,23 +60,3 @@ pub async fn spin_async() -> ! {
         embassy_time::Timer::after(embassy_time::Duration::from_secs(100000)).await;
     }
 }
-
-pub struct BoolSignal {
-    signal: embassy_sync::signal::Signal<CriticalSectionRawMutex, bool>,
-}
-
-impl BoolSignal {
-    pub const fn new() -> Self {
-        BoolSignal {
-            signal: embassy_sync::signal::Signal::<CriticalSectionRawMutex, bool>::new(),
-        }
-    }
-
-    pub async fn wait_for_any_edge(&self) -> bool {
-        self.signal.wait().await
-    }
-
-    pub async fn wait_for_high(&self) {
-        while !self.signal.wait().await {}
-    }
-}

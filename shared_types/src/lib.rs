@@ -11,9 +11,21 @@ use serde::{Deserialize, Serialize};
 pub enum CmdFromPC {
     Disable,
     Heartbeat,
-    PIDSet(f32, f32, f32),
-    PIDGet,
-    Enable,
+    EnablePositionControl,
+    EnableSpeedControl,
+    ResetPosition(f32),
+}
+
+#[derive(Copy, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(
+    feature = "postcard-bindgen",
+    derive(postcard_bindgen::PostcardBindings)
+)]
+pub enum ResponseToPC {
+    Disabled,
+    EnabledPositionControl,
+    EnabledSpeedControl,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]

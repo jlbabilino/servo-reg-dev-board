@@ -1,5 +1,6 @@
 [alias]
 run-pico = "run --release -p pico_program --target thumbv8m.main-none-eabihf"
+build-pico = "build --release -p pico_program --target thumbv8m.main-none-eabihf"
 make-bindings = "run --release -p bindings_gen"
 
 target = "thumbv8m.main-none-eabihf"
@@ -24,4 +25,4 @@ rustflags = [
 runner = "probe-rs run --chip RP235X --protocol swd"
 
 [env]
-DEFMT_LOG = "debug"
+DEFMT_LOG = "info"

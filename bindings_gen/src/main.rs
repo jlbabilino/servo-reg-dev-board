@@ -1,7 +1,5 @@
-use std::path::Path;
-
 use postcard_bindgen::{PackageInfo, generate_bindings, python};
-use shared_types::{CmdFromPC, TelemFromPC, TelemToPC};
+use shared_types::{CmdFromPC, ResponseToPC, TelemFromPC, TelemToPC};
 
 fn main() {
     let mut output_dir = std::env::current_dir().unwrap();
@@ -15,7 +13,7 @@ fn main() {
             version: "0.1.0".try_into().unwrap(),
         },
         python::GenerationSettings::enable_all(),
-        generate_bindings!(CmdFromPC, TelemToPC, TelemFromPC),
+        generate_bindings!(CmdFromPC, ResponseToPC, TelemToPC, TelemFromPC),
     )
     .unwrap();
     print!("Python bindings generated!");

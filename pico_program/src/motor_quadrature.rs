@@ -1,9 +1,6 @@
-use core::cell::Cell;
 use core::f32::consts;
 use embassy_futures::select::{Either, select};
 use embassy_rp::adc;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::{blocking_mutex, watch};
 use embassy_time::{Duration, Instant};
 use fixed::traits::ToFixed;
 use fixed::types::I32F32;
@@ -15,7 +12,8 @@ pub struct QuadratureError {}
 
 #[derive(Copy, Clone, defmt::Format)]
 pub enum QuadratureCommand {
-    Zero,
+    #[allow(unused)]
+    Zero, // TODO: add feature in manual mode to call this command
     ResetAt(I32F32),
 }
 

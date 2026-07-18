@@ -1,24 +1,15 @@
-use core::cell::Cell;
-
 use embassy_futures::select::Either;
 use embassy_rp::{
     gpio,
     pwm::{self, SetDutyCycle},
 };
-use embassy_sync::{
-    blocking_mutex::{self, raw::CriticalSectionRawMutex},
-    channel,
-    pubsub::WaitResult,
-};
+use embassy_sync::pubsub::WaitResult;
 use fixed::types::I32F32;
 
 use crate::{
     types::{F32Mutex, I32F32Mutex, MotorCommandSubscriber},
     util::spin_async,
 };
-
-static MOTOR_POSITION_OFFSET: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>> =
-    blocking_mutex::Mutex::new(Cell::new(I32F32::ZERO));
 
 #[derive(Copy, Clone, defmt::Format)]
 pub enum MotorCommand {

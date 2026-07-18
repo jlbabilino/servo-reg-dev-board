@@ -2,5 +2,7 @@
   "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
   "rust-analyzer.check.allTargets": false,
   "editor.formatOnSave": true,
-  "rust-analyzer.check.workspace": false
+  "rust-analyzer.check.workspace": false,
+  "better-todo-tree.tree.scanMode": "workspace",
+  "python.terminal.activateEnvironment": false,
 }

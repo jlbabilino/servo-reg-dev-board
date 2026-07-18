@@ -4,25 +4,24 @@ use core::net::SocketAddrV4;
 use core::cell::Cell;
 use embassy_futures::select::Either;
 use embassy_futures::select::Either3;
+use embassy_futures::select::Either4;
 use embassy_futures::select::select;
 use embassy_futures::select::select3;
+use embassy_futures::select::select4;
 use embassy_rp::gpio;
 use embassy_rp::peripherals::SPI1;
 use embassy_sync::blocking_mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::pubsub::WaitResult;
 use embassy_sync::signal::Signal;
-use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Ticker;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use fixed::traits::ToFixed;
 use fixed::types::I32F32;
-use serde::Deserialize;
-use serde::Serialize;
 use shared_types::CmdFromPC;
 use shared_types::TelemFromPC;
 use shared_types::TelemToPC;
@@ -45,6 +44,7 @@ use crate::types::F32Mutex;
 use crate::types::I32F32Mutex;
 use crate::types::LEDCommandPublisher;
 use crate::types::NetworkStatusWatchSender;
+use crate::types::ResponseToPCSubscriber;
 
 pub type ExclusiveW5500 = W5500<
     ExclusiveDevice<
@@ -65,23 +65,6 @@ const PC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10); // TODO: get this from
 const GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 const SUBNET: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
 const MAC_ADDR: Eui48Addr = Eui48Addr::new(0x02, 0x00, 0x11, 0x22, 0x33, 0x44); // arbitrary
-
-const ENABLED_ANIM: crate::rgb_led::Command =
-    crate::rgb_led::Command::Looping(crate::anim::Animation::Pulse(crate::anim::Pulse::new(
-        color::palette::css::RED.discard_alpha(),
-        embassy_time::Duration::from_millis(100),
-        embassy_time::Duration::from_millis(125),
-        embassy_time::Duration::from_millis(250),
-        embassy_time::Duration::from_millis(400),
-        2,
-    )));
-
-const DISABLED_ANIM: crate::rgb_led::Command = crate::rgb_led::Command::Looping(
-    crate::anim::Animation::FadeInFadeOut(crate::anim::FadeInFadeOut::new(
-        color::palette::css::BLUE.discard_alpha(),
-        embassy_time::Duration::from_secs(3),
-    )),
-);
 
 /// Network messages outline:
 ///
@@ -113,6 +96,7 @@ pub async fn network_task(
     mut w5500_int: gpio::Input<'static>,
     status_sender: NetworkStatusWatchSender,
     cmd_from_pc_publisher: CMDFromPCPublisher,
+    mut resp_to_pc_subscriber: ResponseToPCSubscriber,
     motor_current_position: &'static I32F32Mutex,
     motor_position_setpoint: &'static I32F32Mutex,
     motor_speed_setpoint: &'static F32Mutex,
@@ -143,13 +127,14 @@ pub async fn network_task(
                 );
             }
         }
-
-        // We assume W5500 CMD socket is disconnected/closed here
-
-        // Indicate this closed state initialization
-        status_sender.send(NetworkStatus::Disconnected);
-        Timer::after_secs(1).await;
     }
+
+    // We now assume W5500 CMD socket is disconnected/closed here
+
+    // Indicate this closed state initialization
+    status_sender.send(NetworkStatus::Disconnected);
+
+    Timer::after_millis(100).await;
 
     let w5500_lock = Mutex::<NoopRawMutex, ExclusiveW5500>::new(w5500);
 
@@ -160,6 +145,7 @@ pub async fn network_task(
             &mut w5500_int,
             &status_sender,
             &cmd_from_pc_publisher,
+            &mut resp_to_pc_subscriber,
             motor_current_position,
             motor_position_setpoint,
             motor_speed_setpoint,
@@ -170,16 +156,16 @@ pub async fn network_task(
             Ok(_) => {
                 // Must have gracefully disconnected
                 defmt::info!("Connection closed");
-                Timer::after_secs(1).await;
-                continue;
             }
             Err(msg) => {
                 defmt::error!("Connection aborted: {}", msg);
                 status_sender.send(NetworkStatus::Disconnected);
-                Timer::after_secs(1).await;
-                continue;
+                // clear stale cmd requests
+                cmd_from_pc_publisher.clear();
+                resp_to_pc_subscriber.clear();
             }
         }
+        Timer::after_secs(1).await;
     }
 }
 
@@ -188,6 +174,7 @@ async fn handle_connection(
     w5500_int: &mut gpio::Input<'static>,
     status_sender: &NetworkStatusWatchSender,
     cmd_from_pc_publisher: &CMDFromPCPublisher,
+    resp_to_pc_subscriber: &mut ResponseToPCSubscriber,
     motor_current_position: &'static I32F32Mutex,
     motor_position_setpoint: &'static I32F32Mutex,
     motor_speed_setpoint: &'static F32Mutex,
@@ -289,8 +276,9 @@ async fn handle_connection(
     // Race these functions. If any end, we must restart connection
     //   1. pulse check. If this ends, heartbeat stopped being received
     //   2. Receiver loop. If this ends, must have gracefully disconnected
-    //   3. Transmission loop. This should never end
-    match select3(
+    //   3. UDP transmission loop. This should never end
+    //   4. TCP transmission loop. Should also never end.
+    match select4(
         pulse_check(&heartbeat_signal),
         active_con_loop(
             w5500_mutex,
@@ -301,31 +289,41 @@ async fn handle_connection(
             motor_speed_setpoint,
         ),
         push_telemetry(w5500_mutex, motor_current_position),
+        push_resp_to_pc(w5500_mutex, resp_to_pc_subscriber),
     )
     .await
     {
-        Either3::First(_) => {
+        Either4::First(_) => {
             return Err("Didn't get a hearbeat from client in time");
         }
-        Either3::Second(Ok(_)) => {
+        Either4::Second(Ok(_)) => {
             // This is the "ideal" path, graceful disconnection
             defmt::info!("Client disconnected gracefully");
         }
-        Either3::Second(Err(msg)) => {
+        Either4::Second(Err(msg)) => {
             // Propagate error
             return Err(msg);
         }
-        Either3::Third(Ok(_)) => {
-            // strangely, ok is bad in this case because the loop should never end
-            return Err("Failed to push telemetry data");
+        Either4::Third(Ok(_)) => {
+            // strangely, "ok" is bad in this case because the loop should never end
+            return Err("Telemetry push loop should never end! Check code");
         }
-        Either3::Third(Err(msg)) => {
+        Either4::Third(Err(msg)) => {
+            return Err(msg);
+        }
+        Either4::Fourth(Ok(_)) => {
+            return Err("Response to PC loop should never end! Check code.");
+        }
+        Either4::Fourth(Err(msg)) => {
             return Err(msg);
         }
     }
 
     // Now we know client gracefully disconnected
     status_sender.send(NetworkStatus::Disconnected);
+    // clear stale requests
+    cmd_from_pc_publisher.clear();
+    resp_to_pc_subscriber.clear();
     Ok(())
 }
 
@@ -418,7 +416,15 @@ async fn active_con_loop(
                 .map_err(|_| "Failed to deserialize CMD packet from PC")?;
             heartbeat_signal.signal(Heartbeat {});
             drop(w5500); // yield w5500 back before await point
-            cmd_from_pc_publisher.publish(cmd_from_pc).await;
+            match cmd_from_pc {
+                CmdFromPC::Heartbeat => {
+                    // don't need to relay the heartbeat signal to the rest
+                    // of the program
+                }
+                _ => {
+                    cmd_from_pc_publisher.publish(cmd_from_pc).await;
+                }
+            }
         }
 
         {
@@ -438,14 +444,10 @@ async fn active_con_loop(
                     .set_sn_ir(TELEM_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
                     .map_err(|_| "Failed to clear TELEM socket recv interrupt")?;
                 let mut buf = [0; 64];
-                const PACKET_SIZE: usize = size_of::<TelemFromPC>();
                 let (num_bytes_read, _) = w5500
                     .udp_recv_from(TELEM_SOCKET, &mut buf)
                     .map_err(|_| "Failed to receive UDP data on TELEM socket")?;
                 let bytes_slice: &[u8] = &buf[..num_bytes_read as usize];
-                if num_bytes_read as usize != PACKET_SIZE {
-                    return Err("Received packet of incorrect size on TELEM socket");
-                }
                 let telem_from_pc = postcard::from_bytes::<TelemFromPC>(bytes_slice)
                     .map_err(|_| "Failed to deserialize data received on TELEM socket")?;
                 match telem_from_pc {
@@ -461,6 +463,27 @@ async fn active_con_loop(
     }
 }
 
+async fn push_resp_to_pc(
+    w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
+    resp_to_pc_subscriber: &mut ResponseToPCSubscriber,
+) -> Result<(), &'static str> {
+    loop {
+        let WaitResult::Message(resp) = resp_to_pc_subscriber.next_message().await else {
+            return Err("Response to PC lagged!");
+        };
+
+        let mut buf: [u8; 16] = [0; 16];
+        let packet =
+            postcard::to_slice(&resp, &mut buf).map_err(|_| "Failed to serialize ResponseToPC")?;
+
+        let mut w5500 = w5500_mutex.lock().await;
+
+        w5500
+            .tcp_write(CMD_SOCKET, &packet)
+            .map_err(|_| "Failed to send response to PC")?;
+    }
+}
+
 async fn push_telemetry(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
@@ -473,11 +496,15 @@ async fn push_telemetry(
                 TelemToPC::MotorPosition(motor_current_position.lock(|cell| cell.get().to_num()));
             const PACKET_BUF_SIZE: usize = 16;
             let mut buf: [u8; PACKET_BUF_SIZE] = [0; PACKET_BUF_SIZE];
-            postcard::to_slice(&motor_angle_packet, &mut buf)
+            let packet = postcard::to_slice(&motor_angle_packet, &mut buf)
                 .map_err(|_| "Failed to serialize TelemToPC into a byte buffer")?;
 
-            let num_bytes = w5500
-                .udp_send_to(TELEM_SOCKET, &buf, &SocketAddrV4::new(PC_ADDR, TELEM_PORT))
+            let _ = w5500
+                .udp_send_to(
+                    TELEM_SOCKET,
+                    packet,
+                    &SocketAddrV4::new(PC_ADDR, TELEM_PORT),
+                ) // TODO: need to use PC_ADDR from TCP
                 .map_err(|_| "Failed to send UDP telemetry packet")?;
             // if num_bytes as usize != PACKET_BUF_SIZE {
             //     return Err("Telemetry packet size mismatch");
