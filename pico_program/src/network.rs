@@ -351,7 +351,7 @@ async fn active_con_loop(
     motor_position_setpoint: &'static I32F32Mutex,
     motor_speed_setpoint: &'static F32Mutex,
 ) -> Result<(), &'static str> {
-    loop {
+    'interrupt_loop: loop {
         w5500_int.wait_for_low().await;
         // Interrupts we need to handle:
         // 1. IP conflict
@@ -444,9 +444,36 @@ async fn active_con_loop(
                     .set_sn_ir(TELEM_SOCKET, SocketInterrupt::DEFAULT.clear_recv())
                     .map_err(|_| "Failed to clear TELEM socket recv interrupt")?;
                 let mut buf = [0; 64];
-                let (num_bytes_read, _) = w5500
-                    .udp_recv_from(TELEM_SOCKET, &mut buf)
-                    .map_err(|_| "Failed to receive UDP data on TELEM socket")?;
+
+                let mut num_bytes_read = match w5500.udp_recv_from(TELEM_SOCKET, &mut buf) {
+                    Ok((num_bytes, _)) => num_bytes,
+                    Err(w5500_hl::Error::WouldBlock) => {
+                        // must be nothing left to read
+                        continue 'interrupt_loop;
+                    }
+                    Err(_) => {
+                        return Err("Failed to receive UDP data on TELEM socket");
+                    }
+                };
+
+                // I've found sometimes the buffer fills up faster than the
+                // interrupt can keep up. So we need to make sure the buffer
+                // is empty by polling upd_recv again
+                loop {
+                    match w5500.udp_recv_from(TELEM_SOCKET, &mut buf) {
+                        Ok((num_bytes, _)) => {
+                            num_bytes_read = num_bytes;
+                            continue;
+                        }
+                        Err(w5500_hl::Error::WouldBlock) => {
+                            break;
+                        }
+                        Err(_) => {
+                            return Err("Failed to receive UDP data on TELEM socket");
+                        }
+                    };
+                }
+
                 let bytes_slice: &[u8] = &buf[..num_bytes_read as usize];
                 let telem_from_pc = postcard::from_bytes::<TelemFromPC>(bytes_slice)
                     .map_err(|_| "Failed to deserialize data received on TELEM socket")?;

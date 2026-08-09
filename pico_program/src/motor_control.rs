@@ -93,7 +93,7 @@ pub async fn motor_control_task(
                 loop {
                     let curr_angle = motor_current_position.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
-                    let commanded_speed = (kp * err).clamp(-0.1, 0.1);
+                    let commanded_speed = (kp * err).clamp(-1.0, 1.0);
                     // defmt::info!("Commanded speed: {}", &commanded_speed);
                     set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed)?;
 
@@ -112,7 +112,7 @@ pub async fn motor_control_task(
                     let curr_angle = motor_current_position.lock(|cell| cell.get());
                     let target_angle = motor_position_setpoint.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
-                    let commanded_speed = (kp * err).clamp(-0.1, 0.1);
+                    let commanded_speed = (kp * err).clamp(-1.0, 1.0);
                     // defmt::info!("Commanded speed: {}", &commanded_speed);
                     set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed)?;
 

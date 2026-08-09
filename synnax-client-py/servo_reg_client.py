@@ -25,7 +25,6 @@ class UDPClientProtocol(asyncio.BaseProtocol):
         self.motor_angle_ch = motor_angle_ch
 
     def connection_made(self, transport: asyncio.DatagramTransport):
-        print("Connection made")
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]):
@@ -45,7 +44,7 @@ class UDPClientProtocol(asyncio.BaseProtocol):
         print(f"Error received: {exc}")
 
     def connection_lost(self, exc):
-        print("Connection closed")
+        pass
 
 
 # async def console_input_prompt(telem_transport: asyncio.DatagramTransport, motor_angle_ch: sy.Channel):
@@ -70,30 +69,35 @@ async def output_to_synnax(
     time_ch: sy.Channel,
     synnax_writer: sy.Writer,
 ):
-    while True:
-        data = await cmd_tcp_reader.read(128)
-        response, num_bytes = servo_reg_com.deserialize(
-            servo_reg_com.ResponseToPC, data
-        )
+    try:
+        while True:
+            data = await cmd_tcp_reader.read(128)
+            response, num_bytes = servo_reg_com.deserialize(
+                servo_reg_com.ResponseToPC, data
+            )
 
-        if isinstance(response, servo_reg_com.ResponseToPC_Disabled):
-            synnax_writer.write(
-                channels_or_data=[time_ch.key, motor_state_ch.key],
-                series=[[sy.TimeStamp.now()], [0]],
-            )
-            synnax_writer.commit()
-        elif isinstance(response, servo_reg_com.ResponseToPC_EnabledPositionControl):
-            synnax_writer.write(
-                channels_or_data=[time_ch.key, motor_state_ch.key],
-                series=[[sy.TimeStamp.now()], [1]],
-            )
-            synnax_writer.commit()
-        elif isinstance(response, servo_reg_com.ResponseToPC_EnabledSpeedControl):
-            synnax_writer.write(
-                channels_or_data=[time_ch.key, motor_state_ch.key],
-                series=[[sy.TimeStamp.now()], [2]],
-            )
-            synnax_writer.commit()
+            if isinstance(response, servo_reg_com.ResponseToPC_Disabled):
+                synnax_writer.write(
+                    channels_or_data=[time_ch.key, motor_state_ch.key],
+                    series=[[sy.TimeStamp.now()], [0]],
+                )
+                synnax_writer.commit()
+            elif isinstance(response, servo_reg_com.ResponseToPC_EnabledPositionControl):
+                synnax_writer.write(
+                    channels_or_data=[time_ch.key, motor_state_ch.key],
+                    series=[[sy.TimeStamp.now()], [1]],
+                )
+                synnax_writer.commit()
+            elif isinstance(response, servo_reg_com.ResponseToPC_EnabledSpeedControl):
+                synnax_writer.write(
+                    channels_or_data=[time_ch.key, motor_state_ch.key],
+                    series=[[sy.TimeStamp.now()], [2]],
+                )
+                synnax_writer.commit()
+    except asyncio.CancelledError:
+        pass
+    except ConnectionAbortedError:
+        pass
 
 
 # Takes values from Synnax channels and sends them to the Pico over ethernet
@@ -128,6 +132,29 @@ async def input_cmd_from_synnax(
                             )
                             cmd_tcp_writer.write(packet)
                             await cmd_tcp_writer.drain()
+
+    except asyncio.CancelledError:
+        pass
+    except ConnectionAbortedError:
+        pass
+
+async def input_reset_from_synnax(
+    cmd_tcp_writer: asyncio.StreamWriter,
+    synnax_streamer_reset: sy_str.AsyncStreamer,
+    motor_reset_ch: sy.Channel,
+):
+    try:
+        async for frame in synnax_streamer_reset:
+
+            motor_reset_values = frame[motor_reset_ch.key]
+
+            for value in motor_reset_values:
+                if isinstance(value, np.number):
+                    packet = servo_reg_com.serialize(
+                        servo_reg_com.CmdFromPC_ResetPosition(float(value))
+                    )
+                    cmd_tcp_writer.write(packet)
+                    await cmd_tcp_writer.drain()
 
     except asyncio.CancelledError:
         pass
@@ -188,7 +215,7 @@ async def heartbeat_sender(cmd_writer: asyncio.streams.StreamWriter):
                 await cmd_writer.drain()
 
             except ConnectionAbortedError:
-                print_formatted_text("Connection lost")
+                print_formatted_text(HTML("<ansired>Connection lost</ansired>"))
                 return
             except TimeoutError:
                 print_formatted_text("Timed out")
@@ -272,7 +299,22 @@ async def main():
         index=motor_state_ts_ch.key,
     )
 
+    motor_reset_ts_ch = client.channels.create(
+        name="motor_reset_ts",
+        data_type=sy.DataType.TIMESTAMP,
+        is_index=True,
+        retrieve_if_name_exists=True,
+    )
+    motor_reset_ch = client.channels.create(
+        name="motor_reset",
+        data_type=sy.DataType.FLOAT32,
+        retrieve_if_name_exists=True,
+        index=motor_reset_ts_ch.key,
+    )
+
     while True:
+        # Need this delay so the "looking for pico" message comes *after* "connection lost"
+        await asyncio.sleep(0.2)
         print_formatted_text(
             HTML("<ansiblue>Looking for Pico server to connect to</ansiblue>")
         )
@@ -304,6 +346,9 @@ async def main():
                     synnax_streamer_cmd = await client.open_async_streamer(
                         channels=[motor_cmd_ts_ch.key, motor_cmd_ch.key]
                     )
+                    synnax_streamer_reset = await client.open_async_streamer(
+                        channels=[motor_reset_ts_ch.key, motor_reset_ch.key]
+                    )
                     synnax_streamer_position_setpoint = await client.open_async_streamer(
                         channels=[
                             motor_position_setpoint_ts_ch.key,
@@ -316,8 +361,6 @@ async def main():
                             motor_speed_setpoint_ch.key,
                         ]
                     )
-
-                    print_formatted_text("Starting await")
 
                     loop = asyncio.get_running_loop()
 
@@ -340,7 +383,13 @@ async def main():
                         input_cmd_from_synnax(
                             cmd_tcp_writer, synnax_streamer_cmd, motor_cmd_ch
                         ),
-                        name="input-from_synnax-task",
+                        name="input-cmd-from-synnax-task",
+                    )
+                    input_reset_from_synnax_task = asyncio.create_task(
+                        input_reset_from_synnax(
+                            cmd_tcp_writer, synnax_streamer_reset, motor_reset_ch
+                        ),
+                        name="input-reset-from-synnax-task",
                     )
                     input_position_setpoint_from_synnax_task = asyncio.create_task(
                         input_position_setpoint_from_synnax(
@@ -372,6 +421,7 @@ async def main():
                         [
                             heartbeat_task,
                             input_cmd_from_synnax_task,
+                            input_reset_from_synnax_task,
                             input_position_setpoint_from_synnax_task,
                             input_speed_setpoint_from_synnax_task,
                             output_to_synnax_task,
@@ -382,24 +432,25 @@ async def main():
                     if heartbeat_task.done():
                         # Must have lost connection
                         input_cmd_from_synnax_task.cancel()
+                        input_reset_from_synnax_task.cancel()
                         input_position_setpoint_from_synnax_task.cancel()
                         input_speed_setpoint_from_synnax_task.cancel()
                         telem_transport.close()
                         synnax_writer_pos_enc.close()
                         synnax_writer_state.close()
 
-                    if (
-                        input_cmd_from_synnax_task.done()
-                        or input_position_setpoint_from_synnax_task.done()
-                        or input_speed_setpoint_from_synnax_task.done()
-                    ):
-                        # Must have hit ctrl+C
-                        return
+                    # if (
+                    #     input_cmd_from_synnax_task.done()
+                    #     or input_reset_from_synnax_task.done()
+                    #     or input_position_setpoint_from_synnax_task.done()
+                    #     or input_speed_setpoint_from_synnax_task.done()
+                    # ):
+                    #     # Must have hit ctrl+C
+                    #     return
 
         except TypeError as e:
             print_formatted_text(f"Exception in main loop: {e}")
         finally:
-            print_formatted_text("Closing TCP Connection")
             telem_transport.close()
             cmd_tcp_writer.close()
             synnax_writer_pos_enc.close()
