@@ -23,7 +23,7 @@ use crate::{
 
 // TODO: Change name of this to "state manager" or something
 #[embassy_executor::task]
-pub async fn manual_mode_task(
+pub async fn state_manager(
     mut button_1_receiver: ButtonWatchReceiver,
     mut button_2_receiver: ButtonWatchReceiver,
     mut button_3_receiver: ButtonWatchReceiver,

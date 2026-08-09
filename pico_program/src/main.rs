@@ -18,12 +18,12 @@
 mod anim;
 mod buttons;
 mod constants;
-mod manual_control;
 mod monitor;
 mod motor_control;
 mod motor_quadrature;
 mod network;
 mod rgb_led;
+mod state_manager;
 mod types;
 mod util;
 
@@ -358,7 +358,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
-    let Ok(state_manager_token) = manual_control::manual_mode_task(
+    let Ok(state_manager_token) = state_manager::state_manager(
         button_1_receiver,
         button_2_receiver,
         button_3_receiver,
