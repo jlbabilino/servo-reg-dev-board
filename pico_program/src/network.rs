@@ -61,7 +61,6 @@ const TELEM_PORT: u16 = 15509;
 
 // Static IPV4 Config
 const IP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20); // Pico's static IP
-const PC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10); // TODO: get this from TCP, don't hardcode it
 const GATEWAY: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
 const SUBNET: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
 const MAC_ADDR: Eui48Addr = Eui48Addr::new(0x02, 0x00, 0x11, 0x22, 0x33, 0x44); // arbitrary
@@ -239,7 +238,7 @@ async fn handle_connection(
             return Err("CMD socket timed out");
         }
         if !cmd_ir.con_raised() {
-            // Should panic here because this could only happen if the code for
+            // Should fail here because this could only happen if the code for
             // changing interrupts was written incorrectly
             return Err(
                 "Only CON interrupt for CMD socket should be enabled for W5500, check code",
@@ -247,13 +246,24 @@ async fn handle_connection(
         }
 
         // Now we know CMD connection must have been raised, so clear it
-
         let con_clr = SocketInterrupt::DEFAULT.clear_con();
         w5500
             .set_sn_ir(CMD_SOCKET, con_clr)
             .map_err(|_| "Failed to clear CMD con interrupt")?;
 
-        // Now we know W5500 is connected to client, so signal that
+        // Confirm we are connected
+        let status = w5500
+            .sn_sr(CMD_SOCKET)
+            .map_err(|_| "Failed to get socket status: bus error")?
+            .map_err(|_| "Failed to get socket status: conversion error")?;
+
+        if status != SocketStatus::Established {
+            return Err("CMD socket not actually established after connect interrupt");
+        }
+
+        // Now we know W5500 is connected to client, so signal to other tasks
+
+        // Signal to tasks
         status_sender.send(NetworkStatus::Connected);
 
         led_pub
@@ -267,6 +277,15 @@ async fn handle_connection(
         // Configure interrupts to listen for disconnects and data
         configure_interrupts_active_con(&mut w5500)?;
     }
+
+    let cmd_client_ip = {
+        let mut w5500 = w5500_mutex.lock().await;
+
+        // Grab the IP address of the client
+        w5500
+            .sn_dipr(CMD_SOCKET)
+            .map_err(|_| "Failed to grab IP of CMD TCP client")?
+    };
 
     // Set up a mutex since we need to have access to the W5500 in the RX and
     // TX loops simultaneously
@@ -288,7 +307,7 @@ async fn handle_connection(
             motor_position_setpoint,
             motor_speed_setpoint,
         ),
-        push_telemetry(w5500_mutex, motor_current_position),
+        push_telemetry(w5500_mutex, &cmd_client_ip, motor_current_position),
         push_resp_to_pc(w5500_mutex, resp_to_pc_subscriber),
     )
     .await
@@ -513,6 +532,7 @@ async fn push_resp_to_pc(
 
 async fn push_telemetry(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
+    pc_ip: &Ipv4Addr,
     motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
 ) -> Result<(), &'static str> {
     let mut ticker = Ticker::every(Duration::from_hz(500));
@@ -527,11 +547,7 @@ async fn push_telemetry(
                 .map_err(|_| "Failed to serialize TelemToPC into a byte buffer")?;
 
             let _ = w5500
-                .udp_send_to(
-                    TELEM_SOCKET,
-                    packet,
-                    &SocketAddrV4::new(PC_ADDR, TELEM_PORT),
-                ) // TODO: need to use PC_ADDR from TCP
+                .udp_send_to(TELEM_SOCKET, packet, &SocketAddrV4::new(*pc_ip, TELEM_PORT))
                 .map_err(|_| "Failed to send UDP telemetry packet")?;
             // if num_bytes as usize != PACKET_BUF_SIZE {
             //     return Err("Telemetry packet size mismatch");
