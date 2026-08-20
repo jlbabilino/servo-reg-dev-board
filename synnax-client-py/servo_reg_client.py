@@ -1,3 +1,8 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath("build"))
+
 import asyncio
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -18,11 +23,15 @@ PICO_IP = "192.168.1.20"
 
 class UDPClientProtocol(asyncio.BaseProtocol):
     def __init__(
-        self, synnax_writer: sy.Writer, time_ch: sy.Channel, motor_angle_ch: sy.Channel
+        self, synnax_writer: sy.Writer, time_ch: sy.Channel, motor_angle_ch: sy.Channel,
+        motor_position_setpoint_feedback_ch: sy.Channel,
+        motor_speed_setpoint_feedback_ch: sy.Channel,
     ):
         self.synnax_writer = synnax_writer
         self.time_ch = time_ch
         self.motor_angle_ch = motor_angle_ch
+        self.motor_position_setpoint_feedback_ch = motor_position_setpoint_feedback_ch
+        self.motor_speed_setpoint_feedback_ch = motor_speed_setpoint_feedback_ch
 
     def connection_made(self, transport: asyncio.DatagramTransport):
         self.transport = transport
@@ -32,13 +41,30 @@ class UDPClientProtocol(asyncio.BaseProtocol):
         value, num_bytes = servo_reg_com.deserialize(servo_reg_com.TelemToPC, data)
 
         if isinstance(value, servo_reg_com.TelemToPC_MotorPosition):
-            val_rad = value[0]
-            # print(f"Data: {as_deg}")
+            # val_rad = value[0]
+            # # print(f"Data: {as_deg}")
+            # self.synnax_writer.write(
+            #     channels_or_data=[self.time_ch.key, self.motor_angle_ch.key],
+            #     series=[[sy.TimeStamp.now()], [val_rad]],
+            # )
+            # self.synnax_writer.commit()
+            # TODO: once refactored, delete this if statement
+            print("Cannot use TelemToPC_MotorPosition")
+
+        if isinstance(value, servo_reg_com.TelemToPC_AllMotor):
+            motor_pos = value.position
+            motor_pos_setpoint = value.position_setpoint
+            motor_speed_setpoint = value.speed_setpoint
+
             self.synnax_writer.write(
-                channels_or_data=[self.time_ch.key, self.motor_angle_ch.key],
-                series=[[sy.TimeStamp.now()], [val_rad]],
+                channels_or_data=[self.time_ch.key, self.motor_angle_ch.key,
+                                  self.motor_position_setpoint_feedback_ch.key,
+                                  self.motor_speed_setpoint_feedback_ch.key],
+                series=[[sy.TimeStamp.now()], [motor_pos, motor_pos_setpoint, motor_speed_setpoint]],
             )
             self.synnax_writer.commit()
+
+
 
     def error_received(self, exc):
         print(f"Error received: {exc}")
@@ -246,6 +272,18 @@ async def main():
         retrieve_if_name_exists=True,
         index=motor_telem_ts_ch.key,
     )
+    motor_position_setpoint_feedback_ch = client.channels.create(
+        name="motor_position_setpoint_feedback",
+        data_type=sy.DataType.FLOAT32,
+        retrieve_if_name_exists=True,
+        index=motor_telem_ts_ch.key,
+    )
+    motor_speed_setpoint_feedback_ch = client.channels.create(
+        name="motor_speed_setpoint_feedback",
+        data_type=sy.DataType.FLOAT32,
+        retrieve_if_name_exists=True,
+        index=motor_telem_ts_ch.key,
+    )
 
     motor_position_setpoint_ts_ch = client.channels.create(
         name="motor_position_setpoint_ts",
@@ -336,7 +374,7 @@ async def main():
                 with (
                     client.open_writer(
                         start=sy.TimeStamp.now(),
-                        channels=[motor_telem_ts_ch.key, motor_position_encoder_ch.key],
+                        channels=[motor_telem_ts_ch.key, motor_position_encoder_ch.key, motor_position_setpoint_feedback_ch.key, motor_speed_setpoint_feedback_ch.key],
                     ) as synnax_writer_pos_enc,
                     client.open_writer(
                         start=sy.TimeStamp.now(),
@@ -370,6 +408,8 @@ async def main():
                                 synnax_writer_pos_enc,
                                 motor_telem_ts_ch,
                                 motor_position_encoder_ch,
+                                motor_position_setpoint_feedback_ch,
+                                motor_speed_setpoint_feedback_ch,
                             ),
                             local_addr=("0.0.0.0", TELEM_PORT),
                             remote_addr=(PICO_IP, TELEM_PORT),

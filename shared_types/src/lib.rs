@@ -35,7 +35,13 @@ pub enum ResponseToPC {
     derive(postcard_bindgen::PostcardBindings)
 )]
 pub enum TelemToPC {
-    MotorPosition(f32),
+    MotorPosition(f32), // TODO: delete this and make this telemetry a struct
+    // with the fields in AllMotor
+    AllMotor {
+        position: f32,
+        position_setpoint: f32,
+        speed_setpoint: f32,
+    },
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]

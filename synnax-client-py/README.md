@@ -4,4 +4,5 @@ synnax start --listen=localhost:9090 --mem --insecure
 
 # Running Python
 
-py servo_reg_client.py
+.\.venv\Scripts\Activate.ps1
+py .\synnax-client-py\servo_reg_client.py
