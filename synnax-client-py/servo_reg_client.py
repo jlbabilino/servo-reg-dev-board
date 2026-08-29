@@ -40,19 +40,8 @@ class UDPClientProtocol(asyncio.BaseProtocol):
 
         value, num_bytes = servo_reg_com.deserialize(servo_reg_com.TelemToPC, data)
 
-        if isinstance(value, servo_reg_com.TelemToPC_MotorPosition):
-            # val_rad = value[0]
-            # # print(f"Data: {as_deg}")
-            # self.synnax_writer.write(
-            #     channels_or_data=[self.time_ch.key, self.motor_angle_ch.key],
-            #     series=[[sy.TimeStamp.now()], [val_rad]],
-            # )
-            # self.synnax_writer.commit()
-            # TODO: once refactored, delete this if statement
-            print("Cannot use TelemToPC_MotorPosition")
-
-        if isinstance(value, servo_reg_com.TelemToPC_AllMotor):
-            motor_pos = value.position
+        if isinstance(value, servo_reg_com.TelemToPC):
+            motor_pos = value.position_encoder
             motor_pos_setpoint = value.position_setpoint
             motor_speed_setpoint = value.speed_setpoint
 
@@ -60,7 +49,7 @@ class UDPClientProtocol(asyncio.BaseProtocol):
                 channels_or_data=[self.time_ch.key, self.motor_angle_ch.key,
                                   self.motor_position_setpoint_feedback_ch.key,
                                   self.motor_speed_setpoint_feedback_ch.key],
-                series=[[sy.TimeStamp.now()], [motor_pos, motor_pos_setpoint, motor_speed_setpoint]],
+                series=[[sy.TimeStamp.now()], [motor_pos], [motor_pos_setpoint], [motor_speed_setpoint]],
             )
             self.synnax_writer.commit()
 

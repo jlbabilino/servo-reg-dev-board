@@ -21,7 +21,6 @@ use crate::{
     util::spin_async,
 };
 
-// TODO: Change name of this to "state manager" or something
 #[embassy_executor::task]
 pub async fn state_manager(
     mut button_1_receiver: ButtonWatchReceiver,

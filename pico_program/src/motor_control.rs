@@ -71,17 +71,6 @@ pub async fn motor_control_task(
                 set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed)?;
                 spin_async().await;
             }
-            MotorCommand::SpeedRaw => {
-                let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(200));
-                esc_stop_pin.set_high();
-                esc_brake_pin.set_high();
-                loop {
-                    let speed = motor_speed_setpoint.lock(|cell| cell.get());
-                    let speed = speed.clamp(-1., 1.);
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed)?;
-                    ticker.next().await;
-                }
-            }
             MotorCommand::Position(target_angle) => {
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_high();
@@ -100,22 +89,58 @@ pub async fn motor_control_task(
                     ticker.next().await;
                 }
             }
+            MotorCommand::SpeedRaw => {
+                let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(20)); // TODO
+                esc_stop_pin.set_high();
+                esc_brake_pin.set_high();
+                loop {
+                    let speed = motor_speed_setpoint.lock(|cell| cell.get());
+                    let speed = speed.clamp(-1., 1.);
+                    defmt::info!("Commanded speed: {}", &speed); // TODO
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, speed)?;
+                    ticker.next().await;
+                }
+            }
             MotorCommand::PositionRaw => {
                 esc_stop_pin.set_high();
                 esc_brake_pin.set_high();
                 // Basic P controller
                 let kp: f32 = 0.002;
 
-                let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(200));
+                let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_hz(50)); // TODO: change back to 200 Hz
+
+                let mut prev_commanded_speed = 0.0_f32;
+
+                const MAX_STEP: f32 = 0.05;
 
                 loop {
                     let curr_angle = motor_current_position.lock(|cell| cell.get());
                     let target_angle = motor_position_setpoint.lock(|cell| cell.get());
                     let err: f32 = (curr_angle - target_angle).to_num();
-                    let commanded_speed = (kp * err).clamp(-1.0, 1.0);
-                    // defmt::info!("Commanded speed: {}", &commanded_speed);
-                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, -commanded_speed)?;
+                    let raw_pid_out = -(kp * err).clamp(-1.0, 1.0);
 
+                    let pwm_change = raw_pid_out - prev_commanded_speed;
+
+                    let commanded_speed = if pwm_change > MAX_STEP {
+                        prev_commanded_speed + MAX_STEP
+                    } else if pwm_change < -MAX_STEP {
+                        prev_commanded_speed - MAX_STEP
+                    } else {
+                        raw_pid_out
+                    };
+
+                    set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, commanded_speed)?;
+
+                    // let commanded_speed = target_angle.to_num::<f32>().clamp(-1.0, 1.0);
+                    // set_motor_speed(&mut esc_dir_pin, &mut esc_pwm, commanded_speed)?;
+
+                    // defmt::info!(
+                    //     "enc: {}, set: {}, cmd: {}",
+                    //     curr_angle,
+                    //     target_angle,
+                    //     commanded_speed
+                    // );
+                    prev_commanded_speed = commanded_speed;
                     ticker.next().await;
                 }
             }

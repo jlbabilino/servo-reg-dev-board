@@ -547,10 +547,8 @@ async fn push_telemetry(
     loop {
         {
             let mut w5500 = w5500_mutex.lock().await;
-            // let telem_packet =
-            //     TelemToPC::MotorPosition(motor_current_position.lock(|cell| cell.get().to_num()));
-            let telem_packet = TelemToPC::AllMotor {
-                position: motor_current_position.lock(|cell| cell.get().to_num()),
+            let telem_packet = TelemToPC {
+                position_encoder: motor_current_position.lock(|cell| cell.get().to_num()),
                 position_setpoint: motor_position_setpoint.lock(|cell| cell.get().to_num()),
                 speed_setpoint: motor_speed_setpoint.lock(|cell| cell.get()),
             };
