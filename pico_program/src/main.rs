@@ -83,7 +83,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let hall_c_pin = adc::Channel::new_pin(p.PIN_26, gpio::Pull::None);
 
     let esc_stop_pin = gpio::OutputOpenDrain::new(p.PIN_20, gpio::Level::High);
-    let esc_brake_pin = gpio::OutputOpenDrain::new(p.PIN_19, gpio::Level::High);
+    let esc_brake_pin = gpio::Output::new(p.PIN_19, gpio::Level::Low);
     let esc_dir_pin = gpio::OutputOpenDrain::new(p.PIN_21, gpio::Level::High);
 
     let esc_pwm_config = motor_control::pwm_config();
@@ -260,6 +260,13 @@ async fn main(spawner: embassy_executor::Spawner) {
         return;
     };
 
+    // Temporary for debugging the motor controller
+    // TODO: remove once unnecessary
+    let Some(button_3_debug) = BUTTON_3_WATCH.receiver() else {
+        defmt::error!("Failed to create button 3 debug for motor control task");
+        return;
+    };
+
     // ========================================================================
     // ============================= SPAWN TASKS ==============================
     // ========================================================================
@@ -290,6 +297,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         &MOTOR_POSITION_SETPOINT,
         &MOTOR_SPEED_SETPOINT,
         motor_command_subscriber,
+        button_3_debug,
     ) else {
         defmt::error!("Failed to spawn motor control task!");
         return;

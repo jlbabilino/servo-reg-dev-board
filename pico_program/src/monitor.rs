@@ -102,7 +102,7 @@ async fn report_motor_command(motor_command_subscriber: &mut MotorCommandSubscri
             defmt::error!("Motor command pubsub lagged! Missed {} messages", num_msg);
         }
         WaitResult::Message(new_value) => {
-            defmt::debug!("Motor command: {:?}", new_value);
+            defmt::info!("Motor command: {:?}", new_value);
         }
     }
 }

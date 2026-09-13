@@ -21,7 +21,6 @@ use crate::{
     util::spin_async,
 };
 
-// TODO: Change name of this to "state manager" or something
 #[embassy_executor::task]
 pub async fn state_manager(
     mut button_1_receiver: ButtonWatchReceiver,
@@ -319,18 +318,21 @@ async fn handle_manual_mode(
             loop {
                 let left_button = button_2_receiver.get().await;
                 let right_button = button_4_receiver.get().await;
+                let center_button = button_3_receiver.get().await;
 
-                let motor_command = match (left_button, right_button) {
-                    (true, false) => {
+                let motor_command = match (left_button, center_button, right_button) {
+                    (true, false, false) => {
                         // Move motor clockwise
                         MotorCommand::Speed(0.1)
                     }
-                    (false, true) => {
+                    (true, true, false) => MotorCommand::Speed(1.0),
+                    (false, false, true) => {
                         // Move motor counter-clockwise
                         MotorCommand::Speed(-0.1)
                     }
-                    (false, false) => MotorCommand::Disabled,
-                    (true, true) => MotorCommand::Brake,
+                    (false, true, true) => MotorCommand::Speed(-1.0),
+                    (false, _, false) => MotorCommand::Disabled,
+                    (true, _, true) => MotorCommand::Brake,
                 };
 
                 motor_cmd_pub.publish(motor_command).await;

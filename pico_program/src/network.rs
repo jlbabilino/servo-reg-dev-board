@@ -307,7 +307,13 @@ async fn handle_connection(
             motor_position_setpoint,
             motor_speed_setpoint,
         ),
-        push_telemetry(w5500_mutex, &cmd_client_ip, motor_current_position),
+        push_telemetry(
+            w5500_mutex,
+            &cmd_client_ip,
+            motor_current_position,
+            motor_position_setpoint,
+            motor_speed_setpoint,
+        ),
         push_resp_to_pc(w5500_mutex, resp_to_pc_subscriber),
     )
     .await
@@ -533,17 +539,22 @@ async fn push_resp_to_pc(
 async fn push_telemetry(
     w5500_mutex: &Mutex<NoopRawMutex, ExclusiveW5500>,
     pc_ip: &Ipv4Addr,
-    motor_current_position: &'static blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<I32F32>>,
+    motor_current_position: &'static I32F32Mutex,
+    motor_position_setpoint: &'static I32F32Mutex,
+    motor_speed_setpoint: &'static F32Mutex,
 ) -> Result<(), &'static str> {
     let mut ticker = Ticker::every(Duration::from_hz(500));
     loop {
         {
             let mut w5500 = w5500_mutex.lock().await;
-            let motor_angle_packet =
-                TelemToPC::MotorPosition(motor_current_position.lock(|cell| cell.get().to_num()));
+            let telem_packet = TelemToPC {
+                position_encoder: motor_current_position.lock(|cell| cell.get().to_num()),
+                position_setpoint: motor_position_setpoint.lock(|cell| cell.get().to_num()),
+                speed_setpoint: motor_speed_setpoint.lock(|cell| cell.get()),
+            };
             const PACKET_BUF_SIZE: usize = 16;
             let mut buf: [u8; PACKET_BUF_SIZE] = [0; PACKET_BUF_SIZE];
-            let packet = postcard::to_slice(&motor_angle_packet, &mut buf)
+            let packet = postcard::to_slice(&telem_packet, &mut buf)
                 .map_err(|_| "Failed to serialize TelemToPC into a byte buffer")?;
 
             let _ = w5500
