@@ -15,10 +15,14 @@ import synnax.framer.streamer as sy_str
 import servo_reg_com
 import numpy as np
 
-CMD_PORT = 15397
-TELEM_PORT = 15509
+CMD_PORT = 2704
+TELEM_PORT = 2704
 
-PICO_IP = "192.168.1.20"
+# For connecting directly to the Pico over ethernet
+# PICO_IP = "192.168.1.20"
+
+# For connecting through BCLS when in Zucrow network
+PICO_IP = "10.165.89.243"
 
 
 class UDPClientProtocol(asyncio.BaseProtocol):
@@ -39,6 +43,8 @@ class UDPClientProtocol(asyncio.BaseProtocol):
     def datagram_received(self, data: bytes, addr: tuple[str, int]):
 
         value, num_bytes = servo_reg_com.deserialize(servo_reg_com.TelemToPC, data)
+
+        # print("Datagram")
 
         if isinstance(value, servo_reg_com.TelemToPC):
             motor_pos = value.position_encoder
@@ -241,11 +247,20 @@ async def heartbeat_sender(cmd_writer: asyncio.streams.StreamWriter):
 
 async def main():
 
+    # For connecting when Synnax is locally hosted
+    # client = sy.Synnax(
+    #     host="localhost",
+    #     port=9090,
+    #     username="synnax",
+    #     password="seldon",
+    #     secure=False,
+    # )
+
     client = sy.Synnax(
-        host="localhost",
-        port=9090,
-        username="synnax",
-        password="seldon",
+        host="10.165.89.243",
+        port=2703,
+        username="JBabilino",
+        password="bill",
         secure=False,
     )
 
@@ -358,6 +373,21 @@ async def main():
                 return
 
         print_formatted_text(HTML("<ansigreen>Connected!</ansigreen>"))
+
+        # Send one heartbeat at start in case there are delays in spinning up to
+        # prevent comms from getting booted
+        # heartbeat_packet = servo_reg_com.serialize(servo_reg_com.CmdFromPC_Heartbeat())
+        # try:
+        #     cmd_tcp_writer.write(heartbeat_packet)
+        #     await cmd_tcp_writer.drain()
+
+        # except ConnectionAbortedError:
+        #     print_formatted_text(HTML("<ansired>Connection lost</ansired>"))
+        #     return
+        # except TimeoutError:
+        #     print_formatted_text("Timed out")
+        #     return
+
         try:
             with patch_stdout():
                 with (
