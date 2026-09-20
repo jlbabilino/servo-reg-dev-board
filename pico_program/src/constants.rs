@@ -16,7 +16,7 @@ pub const HC_AMP: u16 = (HC_MAX - HC_MIN) / 2;
 
 pub const SQRT_3: f32 = 1.732050807568877293527446341505872367_f32;
 
-pub const HEARTBEAT_MAX_ALLOWED: embassy_time::Duration = embassy_time::Duration::from_millis(500);
+pub const HEARTBEAT_MAX_ALLOWED: embassy_time::Duration = embassy_time::Duration::from_millis(2000);
 
 pub const DISCONNECTED_DISABLED_ANIM: crate::anim::Animation =
     crate::anim::Animation::FadeInFadeOut(crate::anim::FadeInFadeOut::new(

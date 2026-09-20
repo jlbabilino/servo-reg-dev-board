@@ -57,7 +57,7 @@ pub type ExclusiveW5500 = W5500<
 const CMD_SOCKET: Sn = Sn::Sn0;
 const CMD_PORT: u16 = 15397;
 const TELEM_SOCKET: Sn = Sn::Sn1;
-const TELEM_PORT: u16 = 15509;
+const TELEM_PORT: u16 = 2704;
 
 // Static IPV4 Config
 const IP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20); // Pico's static IP
@@ -286,6 +286,8 @@ async fn handle_connection(
             .sn_dipr(CMD_SOCKET)
             .map_err(|_| "Failed to grab IP of CMD TCP client")?
     };
+
+    defmt::info!("IP of client: {}", &cmd_client_ip);
 
     // Set up a mutex since we need to have access to the W5500 in the RX and
     // TX loops simultaneously
