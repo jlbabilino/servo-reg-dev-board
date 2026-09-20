@@ -339,6 +339,25 @@ async def main():
         index=motor_reset_ts_ch.key,
     )
 
+    disable_button_ch = client.channels.create(
+        name="disable_button",
+        data_type=sy.DataType.UINT8,
+        retrieve_if_name_exists=True,
+        virtual=True
+    )
+    speed_control_button_ch = client.channels.create(
+        name="speed_control_button",
+        data_type=sy.DataType.UINT8,
+        retrieve_if_name_exists=True,
+        virtual=True
+    )
+    position_control_button_ch = client.channels.create(
+        name="position_control_button",
+        data_type=sy.DataType.UINT8,
+        retrieve_if_name_exists=True,
+        virtual=True
+    )
+
     while True:
         # Need this delay so the "looking for pico" message comes *after* "connection lost"
         await asyncio.sleep(0.2)
